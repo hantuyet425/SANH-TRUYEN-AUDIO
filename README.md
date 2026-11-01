@@ -52,7 +52,7 @@ The decrypted payload is UTF-8 JSON:
 
 The app then dispatches `.github/workflows/generate-audio.yml` on `main`, with `job_id` and `payload_branch` inputs. The workflow reads the encrypted file from that branch, decrypts it using `AUDIO_SHARED_KEY`, and synthesizes the audio.
 
-The artifact is named `audio-<job_id>` and contains only `audio-result.enc`. After decryption, that file is a ZIP containing exactly one complete `audiobook.mp3` plus `manifest.json` (chapter/segment index metadata). All chapter segments are concatenated into the audiobook in their original reading order. Up to four independent TTS requests run concurrently; failed segments are retried up to three times. Each worker segment contains at most 5,000 Unicode characters. The `edge-tts` client internally divides each request into protocol-sized UTF-8 byte frames. Up to four worker segments are synthesized concurrently. The output encryption uses the same AES-256-GCM key and a fresh nonce.
+The artifact is named `audio-<job_id>` and contains only `audio-result.enc`. After decryption, that file is a ZIP containing exactly one complete `audiobook.mp3` plus `manifest.json` (chapter/segment index metadata). Each worker segment contains at most 5,000 Unicode characters; the `edge-tts` client internally divides each request into protocol-sized UTF-8 byte frames. Up to four independent worker segments are synthesized concurrently, failed segments are retried up to three times, and every segment is concatenated in original reading order into the single audiobook. The output encryption uses the same AES-256-GCM key and a fresh nonce.
 
 ## Important privacy and retention notes
 
