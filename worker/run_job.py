@@ -128,10 +128,12 @@ def build_segment_matrix(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> 
             "256 matrix jobs per workflow run. Increase segment_characters or split the book "
             "into smaller input files."
         )
-    return [
-        {"index": index, "label": f"{index:03d}"}
-        for index in range(1, len(segments) + 1)
-    ]
+    return {
+        "include": [
+            {"segment_index": index, "segment_label": f"{index:03d}"}
+            for index in range(1, len(segments) + 1)
+        ]
+    }
 
 
 def write_segment_matrix_outputs(
@@ -141,7 +143,7 @@ def write_segment_matrix_outputs(
 ) -> dict[str, Any]:
     matrix = build_segment_matrix(text, max_chars=max_chars)
     result = {
-        "segment_count": len(matrix),
+        "segment_count": len(matrix["include"]),
         "segment_matrix": matrix,
     }
     if github_output:
@@ -151,7 +153,7 @@ def write_segment_matrix_outputs(
                 + json.dumps(matrix, ensure_ascii=False, separators=(",", ":"))
                 + "\n"
             )
-            stream.write(f"segment_count={len(matrix)}\n")
+            stream.write(f"segment_count={len(matrix['include'])}\n")
     return result
 
 
