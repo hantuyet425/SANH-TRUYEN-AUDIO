@@ -104,7 +104,7 @@ jobs:
 
   synthesize:
     needs: prepare
-    name: TTS segment ${{ matrix.segment.label }} / ${{ needs.prepare.outputs.segment_count }}
+    name: TTS segment ${{ matrix.segment_label }} / ${{ needs.prepare.outputs.segment_count }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -112,7 +112,7 @@ jobs:
       # Change max_parallel above (or this default in workflow_dispatch) to tune concurrency.
       max-parallel: ${{ fromJSON(inputs.max_parallel) }}
       matrix:
-        segment: ${{ fromJSON(needs.prepare.outputs.segment_matrix) }}
+        include: ${{ fromJSON(needs.prepare.outputs.segment_matrix).include }}
     steps:
       - name: Checkout worker
         uses: actions/checkout@v4
@@ -137,7 +137,7 @@ jobs:
         env:
           AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
           JOB_ID: ${{ inputs.job_id }}
-          SEGMENT_INDEX: ${{ matrix.segment.index }}
+          SEGMENT_INDEX: ${{ matrix.segment_index }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json.enc \
@@ -148,8 +148,8 @@ jobs:
       - name: Upload encrypted segment result
         uses: actions/upload-artifact@v4
         with:
-          name: audio-segment-${{ inputs.job_id }}-${{ matrix.segment.label }}
-          path: work/segment/segment-${{ matrix.segment.index }}.enc
+          name: audio-segment-${{ inputs.job_id }}-${{ matrix.segment_label }}
+          path: work/segment/segment-${{ matrix.segment_index }}.enc
           if-no-files-found: error
           retention-days: 1
 
