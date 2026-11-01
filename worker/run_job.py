@@ -97,7 +97,11 @@ def build_audio_plan(
     chapter_manifest: list[dict[str, Any]] = []
     segment_texts: list[str] = []
     for chapter_index, (title, body) in enumerate(chapters, start=1):
-        chunks = split_text(body, max_chars=max_chars)
+        chunks = (
+            split_text(body)
+            if max_chars == MAX_SEGMENT_CHARACTERS
+            else split_text(body, max_chars=max_chars)
+        )
         if not chunks:
             continue
         first_segment = len(segment_texts) + 1
