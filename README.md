@@ -19,9 +19,11 @@ Open **Actions → Generate Audio → Run workflow**. The two controls are also 
 | Workflow input | Default | Purpose |
 |---|---:|---|
 | \`segment_characters\` | \`5000\` | Maximum character count sent to one TTS segment job |
-| \`max_parallel\` | \`4\` | Maximum number of segment jobs allowed to run at the same time |
+| \`max_parallel\` | \`100\` | Maximum number of segment jobs allowed to run at the same time |
 
 To change the defaults permanently, edit the \`default\` value for these two inputs in \`.github/workflows/generate-audio.yml\`. To change settings for one manual run, select different values in the **Run workflow** form. The desktop app sends only the required \`job_id\` and \`payload_branch\`; GitHub applies these workflow defaults automatically.
+
+The \`max_parallel\` choice currently offers 1, 2, 3, 4, 6, 8, 10, 20, 50, or 100. The default is 100. This is the workflow's requested ceiling, not a guarantee that 100 GitHub-hosted runners can start simultaneously: GitHub applies an account-wide concurrency limit based on its plan, and excess matrix jobs remain queued until runner capacity is available.
 
 **GitHub matrix limit:** one workflow run can contain at most 256 matrix jobs. The preparation job stops with a clear error before synthesis if the selected segment size would create more than 256 segments. For a very long book, increase \`segment_characters\` or divide the source into multiple book files.
 
