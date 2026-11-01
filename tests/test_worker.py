@@ -49,8 +49,8 @@ class AudioWorkerTests(unittest.TestCase):
 
     def test_audio_plan_speaks_original_chapter_headings(self):
         source = (
-            "Chương 1: Mở đầu\\nNội dung một.\\n\\n"
-            "Chương 2: Tiếp theo\\nNội dung hai."
+            "Chương 1: Mở đầu\nNội dung một.\n\n"
+            "Chương 2: Tiếp theo\nNội dung hai."
         )
         chapters, segments = build_audio_plan(source)
 
