@@ -1,5 +1,5 @@
 name: Generate Audio
-run-name: Audio job \${{ inputs.job_id }}
+run-name: Audio job ${{ inputs.job_id }}
 
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: sanh-audio-\${{ inputs.job_id }}
+  group: sanh-audio-${{ inputs.job_id }}
   cancel-in-progress: false
 
 jobs:
@@ -45,8 +45,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
-      segment_matrix: \${{ steps.plan.outputs.segment_matrix }}
-      segment_count: \${{ steps.plan.outputs.segment_count }}
+      segment_matrix: ${{ steps.plan.outputs.segment_matrix }}
+      segment_count: ${{ steps.plan.outputs.segment_count }}
     steps:
       - name: Checkout worker
         uses: actions/checkout@v4
@@ -63,10 +63,10 @@ jobs:
 
       - name: Fetch encrypted job payload
         env:
-          GH_TOKEN: \${{ github.token }}
-          GH_REPOSITORY: \${{ github.repository }}
-          PAYLOAD_BRANCH: \${{ inputs.payload_branch }}
-          JOB_ID: \${{ inputs.job_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          PAYLOAD_BRANCH: ${{ inputs.payload_branch }}
+          JOB_ID: ${{ inputs.job_id }}
         run: |
           python - <<'PY'
           import os, subprocess
@@ -85,34 +85,34 @@ jobs:
       - name: Build one matrix entry for every segment
         id: plan
         env:
-          AUDIO_SHARED_KEY: \${{ secrets.AUDIO_SHARED_KEY }}
-          JOB_ID: \${{ inputs.job_id }}
+          AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json.enc \
             --output work/plan \
             --prepare-matrix \
-            --segment-limit "\${{ inputs.segment_characters }}"
+            --segment-limit "${{ inputs.segment_characters }}"
 
       - name: Upload encrypted source payload for segment jobs
         uses: actions/upload-artifact@v4
         with:
-          name: audio-payload-\${{ inputs.job_id }}
+          name: audio-payload-${{ inputs.job_id }}
           path: work/input/payload.json.enc
           if-no-files-found: error
           retention-days: 1
 
   synthesize:
     needs: prepare
-    name: TTS segment \${{ matrix.segment.label }} / \${{ needs.prepare.outputs.segment_count }}
+    name: TTS segment ${{ matrix.segment.label }} / ${{ needs.prepare.outputs.segment_count }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
       fail-fast: false
       # Change max_parallel above (or this default in workflow_dispatch) to tune concurrency.
-      max-parallel: \${{ fromJSON(inputs.max_parallel) }}
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
       matrix:
-        segment: \${{ fromJSON(needs.prepare.outputs.segment_matrix) }}
+        segment: ${{ fromJSON(needs.prepare.outputs.segment_matrix) }}
     steps:
       - name: Checkout worker
         uses: actions/checkout@v4
@@ -130,26 +130,26 @@ jobs:
       - name: Download encrypted source payload
         uses: actions/download-artifact@v4
         with:
-          name: audio-payload-\${{ inputs.job_id }}
+          name: audio-payload-${{ inputs.job_id }}
           path: work/input
 
       - name: Synthesize exactly this segment
         env:
-          AUDIO_SHARED_KEY: \${{ secrets.AUDIO_SHARED_KEY }}
-          JOB_ID: \${{ inputs.job_id }}
-          SEGMENT_INDEX: \${{ matrix.segment.index }}
+          AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
+          SEGMENT_INDEX: ${{ matrix.segment.index }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json.enc \
             --output work/segment \
             --segment-index "$SEGMENT_INDEX" \
-            --segment-limit "\${{ inputs.segment_characters }}"
+            --segment-limit "${{ inputs.segment_characters }}"
 
       - name: Upload encrypted segment result
         uses: actions/upload-artifact@v4
         with:
-          name: audio-segment-\${{ inputs.job_id }}-\${{ matrix.segment.label }}
-          path: work/segment/segment-\${{ matrix.segment.index }}.enc
+          name: audio-segment-${{ inputs.job_id }}-${{ matrix.segment.label }}
+          path: work/segment/segment-${{ matrix.segment.index }}.enc
           if-no-files-found: error
           retention-days: 1
 
@@ -180,31 +180,31 @@ jobs:
       - name: Download encrypted source payload
         uses: actions/download-artifact@v4
         with:
-          name: audio-payload-\${{ inputs.job_id }}
+          name: audio-payload-${{ inputs.job_id }}
           path: work/input
 
       - name: Download every encrypted segment
         uses: actions/download-artifact@v4
         with:
-          pattern: audio-segment-\${{ inputs.job_id }}-*
+          pattern: audio-segment-${{ inputs.job_id }}-*
           path: work/segments
           merge-multiple: true
 
       - name: Merge all segments in original order and encrypt one audiobook
         env:
-          AUDIO_SHARED_KEY: \${{ secrets.AUDIO_SHARED_KEY }}
-          JOB_ID: \${{ inputs.job_id }}
+          AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json.enc \
             --output work/result \
             --merge-segments work/segments \
-            --segment-limit "\${{ inputs.segment_characters }}"
+            --segment-limit "${{ inputs.segment_characters }}"
 
       - name: Upload encrypted complete audiobook
         uses: actions/upload-artifact@v4
         with:
-          name: audio-\${{ inputs.job_id }}
+          name: audio-${{ inputs.job_id }}
           path: work/result/audio-result.enc
           if-no-files-found: error
           retention-days: 1
@@ -217,8 +217,8 @@ jobs:
     steps:
       - name: Delete temporary encrypted input branch
         env:
-          GH_TOKEN: \${{ github.token }}
-          GH_REPOSITORY: \${{ github.repository }}
-          PAYLOAD_BRANCH: \${{ inputs.payload_branch }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          PAYLOAD_BRANCH: ${{ inputs.payload_branch }}
         run: |
-          gh api --method DELETE "repos/\${GH_REPOSITORY}/git/refs/heads/\${PAYLOAD_BRANCH}" || true
+          gh api --method DELETE "repos/${GH_REPOSITORY}/git/refs/heads/${PAYLOAD_BRANCH}" || true
