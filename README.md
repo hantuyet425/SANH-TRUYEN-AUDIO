@@ -18,7 +18,7 @@ Open **Actions → Generate Audio → Run workflow**. The two controls are also 
 
 | Workflow input | Default | Purpose |
 |---|---:|---|
-| \`segment_characters\` | \`5000\` | Maximum character count sent to one TTS segment job |
+| \`segment_characters\` | \`7000\` | Maximum character count sent to one TTS segment job |
 | \`max_parallel\` | \`100\` | Maximum number of segment jobs allowed to run at the same time |
 
 To change the defaults permanently, edit the \`default\` value for these two inputs in \`.github/workflows/generate-audio.yml\`. To change settings for one manual run, select different values in the **Run workflow** form. The desktop app sends only the required \`job_id\` and \`payload_branch\`; GitHub applies these workflow defaults automatically.

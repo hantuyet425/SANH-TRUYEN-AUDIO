@@ -56,17 +56,17 @@ class AudioWorkerTests(unittest.TestCase):
         self.assertTrue(all(len(part) <= 1000 for part in chunks))
         self.assertEqual("".join(chunks), "a" * 7000)
 
-    def test_default_segments_are_at_most_5000_characters(self):
+    def test_default_segments_are_at_most_7000_characters(self):
         source = "a" * 12001
         chunks = split_text(source)
         self.assertTrue(chunks)
-        self.assertTrue(all(len(part) <= 5000 for part in chunks))
-        self.assertEqual([len(part) for part in chunks], [5000, 5000, 2001])
+        self.assertTrue(all(len(part) <= 7000 for part in chunks))
+        self.assertEqual([len(part) for part in chunks], [7000, 5001])
         self.assertEqual("".join(chunks), source)
 
     def test_default_segment_size_constant(self):
         from worker.run_job import MAX_SEGMENT_CHARACTERS
-        self.assertEqual(MAX_SEGMENT_CHARACTERS, 5000)
+        self.assertEqual(MAX_SEGMENT_CHARACTERS, 7000)
 
     def test_rate(self):
         self.assertEqual(rate_string(1.25), "+25%")
@@ -168,7 +168,7 @@ class AudioWorkerTests(unittest.TestCase):
                 )
                 manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
                 self.assertEqual(manifest["parallel_segments"], 4)
-                self.assertEqual(manifest["segment_character_limit"], 5000)
+                self.assertEqual(manifest["segment_character_limit"], 7000)
                 self.assertEqual(manifest["total_segments"], 5)
 
     def test_merge_rejects_missing_matrix_shard(self):
@@ -326,7 +326,7 @@ class AudioWorkerTests(unittest.TestCase):
             self.assertEqual(summary["chapters"], 2)
             self.assertEqual(summary["segments"], 4)
             self.assertEqual(summary["parallel_segments"], 4)
-            self.assertEqual(summary["segment_character_limit"], 5000)
+            self.assertEqual(summary["segment_character_limit"], 7000)
             self.assertEqual(sorted(p.name for p in out.iterdir()),
                              ["audiobook.mp3", "manifest.json"])
             merged = (out / "audiobook.mp3").read_text(encoding="utf-8")

@@ -13,9 +13,9 @@ on:
         required: true
         type: string
       segment_characters:
-        description: "Maximum characters in each TTS segment (easy-to-change default: 5000)"
+        description: "Maximum characters in each TTS segment (easy-to-change default: 7000)"
         required: false
-        default: 5000
+        default: 7000
         type: number
       max_parallel:
         description: Maximum number of segment jobs running at the same time
