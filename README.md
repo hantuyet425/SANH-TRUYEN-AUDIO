@@ -4,7 +4,9 @@ Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 
 - Receives an **AES-256-GCM encrypted** job file from a temporary branch.
 - Runs Vietnamese Edge TTS on a GitHub-hosted Ubuntu runner.
-- Splits each chapter into short speech segments and synthesizes up to **3 segments concurrently**.
+- Splits each chapter into speech segments of at most **5,000 characters**.
+- Runs four visibly separate GitHub Actions matrix workers in parallel, each synthesizing its assigned segments sequentially.
+- Runs a final merge job that validates all shard indices, restores source order, and produces one complete audiobook.
 - Restores the original source order and joins every segment from every chapter into exactly **one `audiobook.mp3`** using FFmpeg.
 - Returns an **AES-256-GCM encrypted ZIP** containing `audiobook.mp3` and `manifest.json` as a workflow artifact.
 - Deletes the temporary input branch after the job.
@@ -52,7 +54,7 @@ The decrypted payload is UTF-8 JSON:
 
 The app then dispatches `.github/workflows/generate-audio.yml` on `main`, with `job_id` and `payload_branch` inputs. The workflow reads the encrypted file from that branch, decrypts it using `AUDIO_SHARED_KEY`, and synthesizes the audio.
 
-The artifact is named `audio-<job_id>` and contains only `audio-result.enc`. After decryption, that file is a ZIP containing exactly one complete `audiobook.mp3` plus `manifest.json` (chapter/segment index metadata). All chapter segments are concatenated into the audiobook in their original reading order. Up to three independent TTS requests run concurrently; failed segments are retried up to three times. The output encryption uses the same AES-256-GCM key and a fresh nonce.
+The four matrix jobs each independently decrypt the uploaded source in runner memory and synthesize their deterministic share of the 5,000-character segments. A following merge job downloads only encrypted shard artifacts, decrypts them in memory, validates that every segment index appears exactly once, and concatenates all MP3 segments in original source order. The final artifact is named `audio-<job_id>` and contains only `audio-result.enc`; after decryption it is a ZIP containing exactly one complete `audiobook.mp3` plus `manifest.json`. The `edge-tts` client internally divides each request into protocol-sized UTF-8 byte frames. Failed TTS requests are retried up to three times. Both shard artifacts and the final output remain AES-256-GCM encrypted while stored by GitHub.
 
 ## Important privacy and retention notes
 
