@@ -397,7 +397,7 @@ async def create_audio_segment(
         temp_root = Path(temp_name)
         clear_mp3 = temp_root / f"segment_{segment_index:06d}.mp3"
         await synthesize_chunk(segment_texts[segment_index - 1], voice, rate, clear_mp3)
-        encrypted_path = output_dir / f"segment-{segment_index:06d}.enc"
+        encrypted_path = output_dir / f"segment-{segment_index}.enc"
         encrypt_file(clear_mp3, encrypted_path, key)
 
     return {
