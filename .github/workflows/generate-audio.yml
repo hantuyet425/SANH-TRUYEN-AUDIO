@@ -111,8 +111,7 @@ jobs:
       fail-fast: false
       # Change max_parallel above (or this default in workflow_dispatch) to tune concurrency.
       max-parallel: ${{ fromJSON(inputs.max_parallel) }}
-      matrix:
-        include: ${{ fromJSON(needs.prepare.outputs.segment_matrix).include }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.segment_matrix) }}
     steps:
       - name: Checkout worker
         uses: actions/checkout@v4
