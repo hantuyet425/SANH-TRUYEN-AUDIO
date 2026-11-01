@@ -94,7 +94,7 @@ class AudioWorkerTests(unittest.TestCase):
                 self.assertEqual(peak, 4)
                 self.assertEqual(paths, [item[1] for item in jobs])
                 self.assertEqual([p.read_text(encoding="utf-8") for p in paths],
-                                 ["first", "second", "third", "fourth"])
+                                 ["first", "second", "third", "fourth", "fifth"])
 
         asyncio.run(scenario())
         self.assertEqual(MAX_CONCURRENT_SEGMENTS, 4)
