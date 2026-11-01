@@ -20,7 +20,7 @@ on:
       max_parallel:
         description: Maximum number of segment jobs running at the same time
         required: false
-        default: "100"
+        default: "4"
         type: choice
         options:
           - "1"
