@@ -12,6 +12,24 @@ on:
         description: Temporary branch containing encrypted input only
         required: true
         type: string
+      segment_characters:
+        description: Maximum characters in each TTS segment (easy-to-change default: 5000)
+        required: false
+        default: 5000
+        type: number
+      max_parallel:
+        description: Maximum number of segment jobs running at the same time
+        required: false
+        default: "4"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "6"
+          - "8"
+          - "10"
 
 permissions:
   contents: write
@@ -22,10 +40,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  generate:
-    name: Generate audiobook (4 segments in parallel)
+  prepare:
+    name: Prepare segment list
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
+    outputs:
+      segment_matrix: ${{ steps.plan.outputs.segment_matrix }}
+      segment_count: ${{ steps.plan.outputs.segment_count }}
     steps:
       - name: Checkout worker
         uses: actions/checkout@v4
@@ -37,12 +58,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install audio system dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install Python dependencies
+      - name: Install worker dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
 
       - name: Fetch encrypted job payload
@@ -66,14 +82,124 @@ jobs:
               f.write(result.stdout)
           PY
 
-      - name: Synthesize all 5,000-character segments with a four-slot queue
+      - name: Build one matrix entry for every segment
+        id: plan
         env:
           AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
           JOB_ID: ${{ inputs.job_id }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json.enc \
-            --output work/result
+            --output work/plan \
+            --prepare-matrix \
+            --segment-limit "${{ inputs.segment_characters }}"
+
+      - name: Upload encrypted source payload for segment jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-payload-${{ inputs.job_id }}
+          path: work/input/payload.json.enc
+          if-no-files-found: error
+          retention-days: 1
+
+  synthesize:
+    needs: prepare
+    name: TTS segment ${{ matrix.segment_label }} / ${{ needs.prepare.outputs.segment_count }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      # Change max_parallel above (or this default in workflow_dispatch) to tune concurrency.
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.segment_matrix) }}
+    steps:
+      - name: Checkout worker
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install worker dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Download encrypted source payload
+        uses: actions/download-artifact@v4
+        with:
+          name: audio-payload-${{ inputs.job_id }}
+          path: work/input
+
+      - name: Synthesize exactly this segment
+        env:
+          AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
+          SEGMENT_INDEX: ${{ matrix.segment_index }}
+        run: |
+          python worker/run_job.py \
+            --payload work/input/payload.json.enc \
+            --output work/segment \
+            --segment-index "$SEGMENT_INDEX" \
+            --segment-limit "${{ inputs.segment_characters }}"
+
+      - name: Upload encrypted segment result
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-segment-${{ inputs.job_id }}-${{ matrix.segment_label }}
+          path: work/segment/segment-${{ matrix.segment_index }}.enc
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge audiobook
+    needs: [prepare, synthesize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout worker
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install audio system dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install worker dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Download encrypted source payload
+        uses: actions/download-artifact@v4
+        with:
+          name: audio-payload-${{ inputs.job_id }}
+          path: work/input
+
+      - name: Download every encrypted segment
+        uses: actions/download-artifact@v4
+        with:
+          pattern: audio-segment-${{ inputs.job_id }}-*
+          path: work/segments
+          merge-multiple: true
+
+      - name: Merge all segments in original order and encrypt one audiobook
+        env:
+          AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          python worker/run_job.py \
+            --payload work/input/payload.json.enc \
+            --output work/result \
+            --merge-segments work/segments \
+            --segment-limit "${{ inputs.segment_characters }}" \
+            --max-parallel "${{ inputs.max_parallel }}"
 
       - name: Upload encrypted complete audiobook
         uses: actions/upload-artifact@v4
@@ -83,8 +209,13 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  cleanup:
+    name: Clean temporary encrypted input branch
+    if: always()
+    needs: [prepare, synthesize, merge]
+    runs-on: ubuntu-latest
+    steps:
       - name: Delete temporary encrypted input branch
-        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}

@@ -69,6 +69,8 @@ def split_chapters(text: str) -> list[tuple[str, str]]:
 
 
 def split_text(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[str]:
+    if max_chars < 1:
+        raise ValueError("max_chars must be a positive integer.")
     text = re.sub(r"\s+", " ", text).strip()
     parts: list[str] = []
     while len(text) > max_chars:
@@ -85,13 +87,21 @@ def split_text(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[str]:
     return [part for part in parts if part]
 
 
-def build_audio_plan(text: str) -> tuple[list[dict[str, Any]], list[str]]:
-    """Create a deterministic chapter/segment plan shared by all matrix workers."""
+def build_audio_plan(
+    text: str, max_chars: int = MAX_SEGMENT_CHARACTERS
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Create a deterministic chapter/segment plan for all visible matrix jobs."""
+    if max_chars < 1:
+        raise ValueError("max_chars must be a positive integer.")
     chapters = split_chapters(text)
     chapter_manifest: list[dict[str, Any]] = []
     segment_texts: list[str] = []
     for chapter_index, (title, body) in enumerate(chapters, start=1):
-        chunks = split_text(body)
+        chunks = (
+            split_text(body)
+            if max_chars == MAX_SEGMENT_CHARACTERS
+            else split_text(body, max_chars=max_chars)
+        )
         if not chunks:
             continue
         first_segment = len(segment_texts) + 1
@@ -107,6 +117,44 @@ def build_audio_plan(text: str) -> tuple[list[dict[str, Any]], list[str]]:
     if not segment_texts:
         raise RuntimeError("No audio segments could be created.")
     return chapter_manifest, segment_texts
+
+
+def build_segment_matrix(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[dict[str, Any]]:
+    """Build one visible GitHub Actions matrix job for every audio segment."""
+    _chapters, segments = build_audio_plan(text, max_chars=max_chars)
+    if len(segments) > 256:
+        raise RuntimeError(
+            f"This story creates {len(segments)} segments. GitHub Actions supports at most "
+            "256 matrix jobs per workflow run. Increase segment_characters or split the book "
+            "into smaller input files."
+        )
+    return {
+        "include": [
+            {"segment_index": index, "segment_label": f"{index:03d}"}
+            for index in range(1, len(segments) + 1)
+        ]
+    }
+
+
+def write_segment_matrix_outputs(
+    text: str,
+    max_chars: int,
+    github_output: str | Path | None,
+) -> dict[str, Any]:
+    matrix = build_segment_matrix(text, max_chars=max_chars)
+    result = {
+        "segment_count": len(matrix["include"]),
+        "segment_matrix": matrix,
+    }
+    if github_output:
+        with Path(github_output).open("a", encoding="utf-8") as stream:
+            stream.write(
+                "segment_matrix="
+                + json.dumps(matrix, ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
+            stream.write(f"segment_count={len(matrix['include'])}\n")
+    return result
 
 
 def rate_string(rate: float) -> str:
@@ -182,7 +230,11 @@ def merge_mp3(parts: list[Path], output: Path, work_dir: Path) -> None:
         raise RuntimeError("ffmpeg did not produce a valid audiobook file.")
 
 
-async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, Any]:
+async def create_audio(
+    payload: dict[str, Any],
+    output_dir: Path,
+    max_chars: int = MAX_SEGMENT_CHARACTERS,
+) -> dict[str, Any]:
     """Legacy single-run path, retaining in-process concurrency for local testing."""
     text = payload["text"]
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
@@ -190,7 +242,7 @@ async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, A
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
         raise RuntimeError("Unsupported Vietnamese voice selected.")
 
-    chapter_manifest, segment_texts = build_audio_plan(text)
+    chapter_manifest, segment_texts = build_audio_plan(text, max_chars=max_chars)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="sanh-audio-") as temp_name:
@@ -213,7 +265,7 @@ async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, A
         "voice": voice,
         "rate": rate,
         "parallel_segments": MAX_CONCURRENT_SEGMENTS,
-        "segment_character_limit": MAX_SEGMENT_CHARACTERS,
+        "segment_character_limit": max_chars,
         "total_segments": len(segment_texts),
         "chapters": chapter_manifest,
     }
@@ -225,7 +277,7 @@ async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, A
         "chapters": len(chapter_manifest),
         "segments": len(segment_texts),
         "parallel_segments": MAX_CONCURRENT_SEGMENTS,
-        "segment_character_limit": MAX_SEGMENT_CHARACTERS,
+        "segment_character_limit": max_chars,
         "voice": voice,
         "rate": rate,
     }
@@ -320,6 +372,107 @@ def encrypt_file(source: Path, destination: Path, key: bytes) -> None:
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(envelope, separators=(",", ":")), encoding="utf-8")
+
+
+
+async def create_audio_segment(
+    payload: dict[str, Any],
+    output_dir: Path,
+    key: bytes,
+    segment_index: int,
+    max_chars: int = MAX_SEGMENT_CHARACTERS,
+) -> dict[str, Any]:
+    """Synthesize exactly one planned segment and save only its encrypted MP3."""
+    voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
+    rate = rate_string(float(payload.get("rate", 1.0)))
+    if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
+        raise RuntimeError("Unsupported Vietnamese voice selected.")
+
+    _chapters, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
+    if segment_index < 1 or segment_index > len(segment_texts):
+        raise RuntimeError(
+            f"Segment index {segment_index} is outside 1..{len(segment_texts)}."
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"sanh-audio-segment-{segment_index}-") as temp_name:
+        temp_root = Path(temp_name)
+        clear_mp3 = temp_root / f"segment_{segment_index:06d}.mp3"
+        await synthesize_chunk(segment_texts[segment_index - 1], voice, rate, clear_mp3)
+        encrypted_path = output_dir / f"segment-{segment_index}.enc"
+        encrypt_file(clear_mp3, encrypted_path, key)
+
+    return {
+        "segment_index": segment_index,
+        "total_segments": len(segment_texts),
+        "characters": len(segment_texts[segment_index - 1]),
+        "encrypted_file": encrypted_path.name,
+    }
+
+
+def merge_audio_segments(
+    payload: dict[str, Any],
+    segments_dir: Path,
+    output_dir: Path,
+    key: bytes,
+    max_chars: int = MAX_SEGMENT_CHARACTERS,
+    max_parallel: int = MAX_CONCURRENT_SEGMENTS,
+) -> dict[str, Any]:
+    """Decrypt individual encrypted segment artifacts and build one ordered audiobook."""
+    voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
+    rate = rate_string(float(payload.get("rate", 1.0)))
+    if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
+        raise RuntimeError("Unsupported Vietnamese voice selected.")
+    if max_parallel not in {1, 2, 3, 4, 6, 8, 10}:
+        raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10.")
+
+    chapter_manifest, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
+    expected_indices = list(range(1, len(segment_texts) + 1))
+    actual_files = {
+        path.name for path in segments_dir.glob("segment-*.enc") if path.is_file()
+    }
+    expected_files = {f"segment-{index}.enc" for index in expected_indices}
+    if actual_files != expected_files:
+        missing = sorted(expected_files - actual_files)
+        extra = sorted(actual_files - expected_files)
+        raise RuntimeError(
+            f"Segment artifacts are incomplete (missing={len(missing)}, unexpected={len(extra)})."
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sanh-audio-merge-") as temp_name:
+        temp_root = Path(temp_name)
+        clear_paths: list[Path] = []
+        for index in expected_indices:
+            encrypted_path = segments_dir / f"segment-{index}.enc"
+            clear_mp3 = temp_root / f"segment_{index:06d}.mp3"
+            clear_mp3.write_bytes(decrypt_file(encrypted_path, key))
+            clear_paths.append(clear_mp3)
+
+        audiobook = output_dir / "audiobook.mp3"
+        merge_mp3(clear_paths, audiobook, temp_root)
+
+    manifest = {
+        "audio_file": "audiobook.mp3",
+        "voice": voice,
+        "rate": rate,
+        "parallel_segments": max_parallel,
+        "segment_character_limit": max_chars,
+        "total_segments": len(segment_texts),
+        "chapters": chapter_manifest,
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    encrypt_result(output_dir, output_dir / "audio-result.enc", key)
+    return {
+        "segments": len(segment_texts),
+        "segment_character_limit": max_chars,
+        "parallel_segments": max_parallel,
+        "voice": voice,
+        "rate": rate,
+    }
 
 
 def merge_audio_shards(partials_dir: Path, output_dir: Path, key: bytes) -> dict[str, Any]:
@@ -435,6 +588,11 @@ def main() -> None:
     parser.add_argument("--shard-index", type=int)
     parser.add_argument("--shard-count", type=int, default=MAX_CONCURRENT_SEGMENTS)
     parser.add_argument("--merge-partials", type=Path)
+    parser.add_argument("--prepare-matrix", action="store_true")
+    parser.add_argument("--segment-index", type=int)
+    parser.add_argument("--merge-segments", type=Path)
+    parser.add_argument("--segment-limit", type=int, default=MAX_SEGMENT_CHARACTERS)
+    parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10), default=MAX_CONCURRENT_SEGMENTS)
     args = parser.parse_args()
 
     key = load_key()
@@ -450,12 +608,45 @@ def main() -> None:
         return
 
     if args.payload is None:
-        parser.error("--payload is required unless --merge-partials is used.")
+        parser.error("--payload is required for matrix preparation, segment synthesis, and audiobook merge.")
 
     payload = read_encrypted_payload(args.payload, key)
     expected_job_id = os.environ.get("JOB_ID", "")
     if expected_job_id and payload.get("job_id") != expected_job_id:
         raise RuntimeError("Job ID mismatch.")
+
+    if args.prepare_matrix:
+        output_path = os.environ.get("GITHUB_OUTPUT")
+        summary = write_segment_matrix_outputs(
+            payload["text"], args.segment_limit, output_path
+        )
+        print(
+            f"Prepared {summary['segment_count']} visible TTS segment job(s) "
+            f"at a maximum of {args.segment_limit} characters each."
+        )
+        return
+
+    if args.segment_index is not None:
+        summary = asyncio.run(
+            create_audio_segment(
+                payload, args.output, key, args.segment_index, args.segment_limit
+            )
+        )
+        print(
+            f"Encrypted TTS segment {summary['segment_index']}/"
+            f"{summary['total_segments']} ({summary['characters']} characters)."
+        )
+        return
+
+    if args.merge_segments is not None:
+        summary = merge_audio_segments(
+            payload, args.merge_segments, args.output, key,
+            args.segment_limit, args.max_parallel
+        )
+        print(
+            f"Merged {summary['segments']} segment(s) into one encrypted audiobook."
+        )
+        return
 
     if args.shard_index is not None:
         summary = asyncio.run(
@@ -472,7 +663,7 @@ def main() -> None:
     # Legacy single-run mode retained for local development and backward compatibility.
     with tempfile.TemporaryDirectory(prefix="sanh-mp3-") as output_name:
         audio_dir = Path(output_name)
-        summary = asyncio.run(create_audio(payload, audio_dir))
+        summary = asyncio.run(create_audio(payload, audio_dir, max_chars=args.segment_limit))
         encrypt_result(audio_dir, args.output / "audio-result.enc", key)
 
     print(

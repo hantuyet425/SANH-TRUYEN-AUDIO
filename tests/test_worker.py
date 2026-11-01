@@ -18,8 +18,14 @@ from worker.run_job import (
     MAX_SEGMENT_CHARACTERS,
     create_audio,
     create_audio_shard,
+    create_audio_segment,
+    merge_audio_segments,
     merge_audio_shards,
+    encrypt_file,
+    decrypt_file,
     encrypt_result,
+    build_segment_matrix,
+    write_segment_matrix_outputs,
     rate_string,
     split_chapters,
     split_text,
@@ -174,6 +180,124 @@ class AudioWorkerTests(unittest.TestCase):
             (partials / "partial-0.enc").write_text("{}", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "Expected 4 encrypted segment artifacts"):
                 merge_audio_shards(partials, root / "result", key)
+
+
+    def test_matrix_contains_one_job_per_segment_and_supports_custom_size(self):
+        matrix = build_segment_matrix("ABCDEFGHIJK", max_chars=5)
+        self.assertEqual(
+            matrix["include"],
+            [
+                {"segment_index": 1, "segment_label": "001"},
+                {"segment_index": 2, "segment_label": "002"},
+                {"segment_index": 3, "segment_label": "003"},
+            ],
+        )
+
+    def test_matrix_rejects_more_than_githubs_256_job_limit(self):
+        with self.assertRaisesRegex(RuntimeError, "at most 256 matrix jobs"):
+            build_segment_matrix("x" * 257, max_chars=1)
+
+    def test_prepare_matrix_writes_only_segment_ids_to_github_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "github-output.txt"
+            summary = write_segment_matrix_outputs("ABCDEFGHIJ", 5, output)
+            self.assertEqual(summary["segment_count"], 2)
+            lines = output.read_text(encoding="utf-8").splitlines()
+            values = dict(line.split("=", 1) for line in lines)
+            self.assertEqual(json.loads(values["segment_matrix"]), {
+                "include": [
+                    {"segment_index": 1, "segment_label": "001"},
+                    {"segment_index": 2, "segment_label": "002"},
+                ]
+            })
+            self.assertEqual(values["segment_count"], "2")
+            self.assertNotIn("ABCDEFGHIJ", output.read_text(encoding="utf-8"))
+
+    def test_one_segment_job_saves_only_encrypted_mp3(self):
+        async def fake_synthesize(text, voice, rate, destination):
+            destination.write_bytes(("tts:" + text).encode("utf-8"))
+
+        payload = {
+            "text": "ABCDEFGHIJ",
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
+        key = bytes(range(32))
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "segment"
+            with patch.object(run_job, "synthesize_chunk", side_effect=fake_synthesize):
+                summary = asyncio.run(
+                    create_audio_segment(payload, output, key, 2, max_chars=5)
+                )
+
+            self.assertEqual(summary["segment_index"], 2)
+            self.assertEqual(summary["total_segments"], 2)
+            self.assertEqual(summary["characters"], 5)
+            self.assertEqual([item.name for item in output.iterdir()], ["segment-2.enc"])
+            self.assertEqual(
+                decrypt_file(output / "segment-2.enc", key),
+                b"tts:FGHIJ",
+            )
+
+    def test_individual_segment_artifacts_merge_in_original_order(self):
+        def fake_merge(parts, output, work_dir):
+            output.write_bytes(b"|".join(path.read_bytes() for path in parts))
+
+        payload = {
+            "text": "ABCDEF",
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
+        key = bytes(range(32))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            segments = root / "segments"
+            segments.mkdir()
+            for index, value in enumerate((b"audio-AB", b"audio-CD", b"audio-EF"), start=1):
+                clear = root / f"clear-{index}.mp3"
+                clear.write_bytes(value)
+                encrypt_file(clear, segments / f"segment-{index}.enc", key)
+
+            with patch.object(run_job, "merge_mp3", side_effect=fake_merge):
+                summary = merge_audio_segments(
+                    payload, segments, root / "result", key, max_chars=2
+                )
+
+            self.assertEqual(summary["segments"], 3)
+            final_envelope = json.loads(
+                (root / "result" / "audio-result.enc").read_text(encoding="utf-8")
+            )
+            clear_zip = AESGCM(key).decrypt(
+                base64.b64decode(final_envelope["nonce"]),
+                base64.b64decode(final_envelope["ciphertext"]),
+                MAGIC,
+            )
+            with zipfile.ZipFile(__import__("io").BytesIO(clear_zip)) as archive:
+                self.assertEqual(set(archive.namelist()), {"audiobook.mp3", "manifest.json"})
+                self.assertEqual(
+                    archive.read("audiobook.mp3"),
+                    b"audio-AB|audio-CD|audio-EF",
+                )
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+                self.assertEqual(manifest["total_segments"], 3)
+                self.assertEqual(manifest["segment_character_limit"], 2)
+
+    def test_merge_rejects_a_missing_individual_segment(self):
+        payload = {
+            "text": "ABCDEF",
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
+        key = bytes(range(32))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            segments = root / "segments"
+            segments.mkdir()
+            clear = root / "clear.mp3"
+            clear.write_bytes(b"audio")
+            encrypt_file(clear, segments / "segment-1.enc", key)
+            with self.assertRaisesRegex(RuntimeError, "Segment artifacts are incomplete"):
+                merge_audio_segments(payload, segments, root / "result", key, max_chars=2)
 
     def test_create_audio_outputs_one_ordered_audiobook(self):
         async def fake_synthesize(text, voice, rate, destination):
