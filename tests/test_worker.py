@@ -15,7 +15,10 @@ from worker import run_job
 from worker.run_job import (
     MAGIC,
     MAX_CONCURRENT_SEGMENTS,
+    MAX_SEGMENT_CHARACTERS,
     create_audio,
+    create_audio_shard,
+    merge_audio_shards,
     encrypt_result,
     rate_string,
     split_chapters,
@@ -98,6 +101,79 @@ class AudioWorkerTests(unittest.TestCase):
 
         asyncio.run(scenario())
         self.assertEqual(MAX_CONCURRENT_SEGMENTS, 4)
+
+    def test_four_matrix_shards_merge_all_segments_in_source_order(self):
+        async def fake_synthesize(text, voice, rate, destination):
+            destination.write_text(text, encoding="utf-8")
+
+        def fake_merge(parts, output, work_dir):
+            output.write_text(
+                "|".join(path.read_text(encoding="utf-8") for path in parts),
+                encoding="utf-8",
+            )
+
+        payload = {
+            "text": "Chương 1: Mở đầu\\nNỘI_DUNG",
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
+        key = bytes(range(32))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            partials = root / "partials"
+            partials.mkdir()
+
+            with patch.object(
+                run_job, "split_text",
+                return_value=["ĐOẠN_1", "ĐOẠN_2", "ĐOẠN_3", "ĐOẠN_4", "ĐOẠN_5"],
+            ), patch.object(run_job, "synthesize_chunk", side_effect=fake_synthesize):
+                summaries = [
+                    asyncio.run(create_audio_shard(
+                        payload, root / f"shard-{slot}", key, slot, 4
+                    ))
+                    for slot in range(4)
+                ]
+
+            for slot in range(4):
+                source = root / f"shard-{slot}" / f"partial-{slot}.enc"
+                (partials / source.name).write_bytes(source.read_bytes())
+
+            self.assertEqual([item["assigned_segments"] for item in summaries], [2, 1, 1, 1])
+            self.assertEqual([item["total_segments"] for item in summaries], [5, 5, 5, 5])
+
+            with patch.object(run_job, "merge_mp3", side_effect=fake_merge):
+                summary = merge_audio_shards(partials, root / "result", key)
+
+            self.assertEqual(summary["segments"], 5)
+            self.assertEqual(summary["parallel_workers"], 4)
+            final_envelope = json.loads(
+                (root / "result" / "audio-result.enc").read_text(encoding="utf-8")
+            )
+            clear_zip = AESGCM(key).decrypt(
+                base64.b64decode(final_envelope["nonce"]),
+                base64.b64decode(final_envelope["ciphertext"]),
+                MAGIC,
+            )
+            with zipfile.ZipFile(__import__("io").BytesIO(clear_zip)) as archive:
+                self.assertEqual(set(archive.namelist()), {"audiobook.mp3", "manifest.json"})
+                self.assertEqual(
+                    archive.read("audiobook.mp3").decode("utf-8"),
+                    "ĐOẠN_1|ĐOẠN_2|ĐOẠN_3|ĐOẠN_4|ĐOẠN_5",
+                )
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+                self.assertEqual(manifest["parallel_segments"], 4)
+                self.assertEqual(manifest["segment_character_limit"], 5000)
+                self.assertEqual(manifest["total_segments"], 5)
+
+    def test_merge_rejects_missing_matrix_shard(self):
+        key = bytes(range(32))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            partials = root / "partials"
+            partials.mkdir()
+            (partials / "partial-0.enc").write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "Expected 4 encrypted segment artifacts"):
+                merge_audio_shards(partials, root / "result", key)
 
     def test_create_audio_outputs_one_ordered_audiobook(self):
         async def fake_synthesize(text, voice, rate, destination):
