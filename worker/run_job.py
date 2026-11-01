@@ -409,7 +409,12 @@ def encrypt_result(output_dir: Path, destination: Path, key: bytes) -> None:
     zip_path = destination.with_suffix(".zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in sorted(output_dir.iterdir()):
-            if path.is_file():
+            # The temporary ZIP is created in the destination directory; never
+            # include it (or a previous encrypted result) inside itself.
+            if path.is_file() and path.resolve() not in {
+                zip_path.resolve(),
+                destination.resolve(),
+            }:
                 archive.write(path, arcname=path.name)
     plaintext = zip_path.read_bytes()
     nonce = os.urandom(12)
