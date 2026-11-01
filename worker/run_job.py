@@ -16,7 +16,8 @@ import edge_tts
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MAGIC = b"SANHAUDIO1"
-MAX_CONCURRENT_SEGMENTS = 4
+MAX_CONCURRENT_SEGMENTS = 4  # Legacy in-process path
+DEFAULT_MAX_PARALLEL_JOBS = 100  # GitHub Actions per-segment matrix
 MAX_SEGMENT_CHARACTERS = 5000
 TTS_RETRY_ATTEMPTS = 3
 CHAPTER_RE = re.compile(
@@ -416,15 +417,15 @@ def merge_audio_segments(
     output_dir: Path,
     key: bytes,
     max_chars: int = MAX_SEGMENT_CHARACTERS,
-    max_parallel: int = MAX_CONCURRENT_SEGMENTS,
+    max_parallel: int = DEFAULT_MAX_PARALLEL_JOBS,
 ) -> dict[str, Any]:
     """Decrypt individual encrypted segment artifacts and build one ordered audiobook."""
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
         raise RuntimeError("Unsupported Vietnamese voice selected.")
-    if max_parallel not in {1, 2, 3, 4, 6, 8, 10}:
-        raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10.")
+    if max_parallel not in {1, 2, 3, 4, 6, 8, 10, 20, 50, 100}:
+        raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10, 20, 50, 100.")
 
     chapter_manifest, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
     expected_indices = list(range(1, len(segment_texts) + 1))
@@ -592,7 +593,7 @@ def main() -> None:
     parser.add_argument("--segment-index", type=int)
     parser.add_argument("--merge-segments", type=Path)
     parser.add_argument("--segment-limit", type=int, default=MAX_SEGMENT_CHARACTERS)
-    parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10), default=MAX_CONCURRENT_SEGMENTS)
+    parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10, 20, 50, 100), default=DEFAULT_MAX_PARALLEL_JOBS)
     args = parser.parse_args()
 
     key = load_key()
