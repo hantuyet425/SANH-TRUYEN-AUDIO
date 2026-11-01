@@ -16,7 +16,8 @@ import edge_tts
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MAGIC = b"SANHAUDIO1"
-MAX_CONCURRENT_SEGMENTS = 3
+MAX_CONCURRENT_SEGMENTS = 4
+MAX_SEGMENT_CHARACTERS = 5000
 TTS_RETRY_ATTEMPTS = 3
 CHAPTER_RE = re.compile(
     r"(?im)^\s*((?:chương|chapter|chap\.?|hồi)\s+[^\n]{1,100}|"
@@ -67,7 +68,7 @@ def split_chapters(text: str) -> list[tuple[str, str]]:
     return chapters
 
 
-def split_text(text: str, max_chars: int = 2800) -> list[str]:
+def split_text(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[str]:
     text = re.sub(r"\s+", " ", text).strip()
     parts: list[str] = []
     while len(text) > max_chars:
@@ -119,7 +120,7 @@ async def synthesize_segments(
     """Synthesize independent text segments concurrently, preserving source order."""
     if not segments:
         return []
-    concurrency = max(1, min(4, int(max_concurrency)))
+    concurrency = max(1, min(MAX_CONCURRENT_SEGMENTS, int(max_concurrency)))
     semaphore = asyncio.Semaphore(concurrency)
     synthesize = synthesize_fn or synthesize_chunk
 
@@ -198,7 +199,7 @@ async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, A
         if not segment_jobs:
             raise RuntimeError("No audio segments could be created.")
 
-        # Up to three Edge TTS requests run at once. gather preserves source order.
+        # Up to four Edge TTS requests run at once. gather preserves source order.
         ordered_paths = await synthesize_segments(
             segment_jobs,
             voice,
@@ -214,6 +215,7 @@ async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, A
         "voice": voice,
         "rate": rate,
         "parallel_segments": MAX_CONCURRENT_SEGMENTS,
+        "segment_character_limit": MAX_SEGMENT_CHARACTERS,
         "total_segments": len(segment_jobs),
         "chapters": chapter_manifest,
     }
@@ -225,6 +227,7 @@ async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, A
         "chapters": len(chapter_manifest),
         "segments": len(segment_jobs),
         "parallel_segments": MAX_CONCURRENT_SEGMENTS,
+        "segment_character_limit": MAX_SEGMENT_CHARACTERS,
         "voice": voice,
         "rate": rate,
     }
