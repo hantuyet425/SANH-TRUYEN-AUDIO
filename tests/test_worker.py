@@ -27,6 +27,7 @@ from worker.run_job import (
     build_segment_matrix,
     write_segment_matrix_outputs,
     rate_string,
+    build_audio_plan,
     split_chapters,
     split_text,
 )
@@ -45,6 +46,30 @@ class AudioWorkerTests(unittest.TestCase):
         self.assertEqual(len(chapters), 2)
         self.assertEqual(chapters[0][0], "第一章 初入江湖")
         self.assertEqual(chapters[1][1], "正文二")
+
+    def test_audio_plan_speaks_original_chapter_headings(self):
+        source = (
+            "Chương 1: Mở đầu\\nNội dung một.\\n\\n"
+            "Chương 2: Tiếp theo\\nNội dung hai."
+        )
+        chapters, segments = build_audio_plan(source)
+
+        self.assertEqual(
+            [chapter["title"] for chapter in chapters],
+            ["Chương 1: Mở đầu", "Chương 2: Tiếp theo"],
+        )
+        self.assertEqual(
+            segments,
+            [
+                "Chương 1: Mở đầu Nội dung một.",
+                "Chương 2: Tiếp theo Nội dung hai.",
+            ],
+        )
+
+    def test_audio_plan_does_not_speak_synthetic_titles(self):
+        source = "Một câu chuyện chưa có tiêu đề chương."
+        _chapters, segments = build_audio_plan(source)
+        self.assertEqual(segments, [source])
 
     def test_no_heading_keeps_one_whole_story(self):
         source = "Một câu chuyện chưa có tiêu đề chương."
