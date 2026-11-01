@@ -22,15 +22,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  synthesize:
-    name: TTS worker ${{ matrix.shard }}/4
+  generate:
+    name: Generate audiobook (4 segments in parallel)
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix:
-        shard: [0, 1, 2, 3]
     steps:
       - name: Checkout worker
         uses: actions/checkout@v4
@@ -41,6 +36,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install audio system dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: Install Python dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
@@ -66,63 +66,13 @@ jobs:
               f.write(result.stdout)
           PY
 
-      - name: Synthesize assigned 5,000-character segments
+      - name: Synthesize all 5,000-character segments with a four-slot queue
         env:
           AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
           JOB_ID: ${{ inputs.job_id }}
-          SHARD_INDEX: ${{ matrix.shard }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json.enc \
-            --output work/partial \
-            --shard-index "$SHARD_INDEX" \
-            --shard-count 4
-
-      - name: Upload encrypted partial audio
-        uses: actions/upload-artifact@v4
-        with:
-          name: audio-part-${{ inputs.job_id }}-${{ matrix.shard }}
-          path: work/partial/partial-${{ matrix.shard }}.enc
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    name: Merge audiobook
-    runs-on: ubuntu-latest
-    needs: synthesize
-    timeout-minutes: 60
-    steps:
-      - name: Checkout worker
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install audio system dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install Python dependencies
-        run: python -m pip install --disable-pip-version-check -r requirements.txt
-
-      - name: Download four encrypted partial artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: audio-part-${{ inputs.job_id }}-*
-          path: work/partials
-          merge-multiple: true
-
-      - name: Merge in source order and encrypt final audiobook
-        env:
-          AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
-        run: |
-          python worker/run_job.py \
-            --merge-partials work/partials \
             --output work/result
 
       - name: Upload encrypted complete audiobook
@@ -133,13 +83,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  cleanup:
-    name: Clean temporary encrypted input branch
-    if: always()
-    needs: [synthesize, merge]
-    runs-on: ubuntu-latest
-    steps:
       - name: Delete temporary encrypted input branch
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
