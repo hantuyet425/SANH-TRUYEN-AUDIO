@@ -260,7 +260,8 @@ class AudioWorkerTests(unittest.TestCase):
 
             with patch.object(run_job, "merge_mp3", side_effect=fake_merge):
                 summary = merge_audio_segments(
-                    payload, segments, root / "result", key, max_chars=2
+                    payload, segments, root / "result", key,
+                    max_chars=2, max_parallel=100,
                 )
 
             self.assertEqual(summary["segments"], 3)
@@ -281,6 +282,7 @@ class AudioWorkerTests(unittest.TestCase):
                 manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
                 self.assertEqual(manifest["total_segments"], 3)
                 self.assertEqual(manifest["segment_character_limit"], 2)
+                self.assertEqual(manifest["parallel_segments"], 100)
 
     def test_merge_rejects_a_missing_individual_segment(self):
         payload = {
