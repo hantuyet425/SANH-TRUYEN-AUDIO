@@ -61,8 +61,8 @@ class AudioWorkerTests(unittest.TestCase):
         self.assertEqual(
             segments,
             [
-                "Chương 1: Mở đầu Nội dung một.",
-                "Chương 2: Tiếp theo Nội dung hai.",
+                "Chương 1: Mở đầu. Nội dung một.",
+                "Chương 2: Tiếp theo. Nội dung hai.",
             ],
         )
 
