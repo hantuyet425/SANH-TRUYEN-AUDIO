@@ -185,11 +185,11 @@ class AudioWorkerTests(unittest.TestCase):
     def test_matrix_contains_one_job_per_segment_and_supports_custom_size(self):
         matrix = build_segment_matrix("ABCDEFGHIJK", max_chars=5)
         self.assertEqual(
-            matrix,
+            matrix["include"],
             [
-                {"index": 1, "label": "001"},
-                {"index": 2, "label": "002"},
-                {"index": 3, "label": "003"},
+                {"segment_index": 1, "segment_label": "001"},
+                {"segment_index": 2, "segment_label": "002"},
+                {"segment_index": 3, "segment_label": "003"},
             ],
         )
 
@@ -204,10 +204,12 @@ class AudioWorkerTests(unittest.TestCase):
             self.assertEqual(summary["segment_count"], 2)
             lines = output.read_text(encoding="utf-8").splitlines()
             values = dict(line.split("=", 1) for line in lines)
-            self.assertEqual(json.loads(values["segment_matrix"]), [
-                {"index": 1, "label": "001"},
-                {"index": 2, "label": "002"},
-            ])
+            self.assertEqual(json.loads(values["segment_matrix"]), {
+                "include": [
+                    {"segment_index": 1, "segment_label": "001"},
+                    {"segment_index": 2, "segment_label": "002"},
+                ]
+            })
             self.assertEqual(values["segment_count"], "2")
             self.assertNotIn("ABCDEFGHIJ", output.read_text(encoding="utf-8"))
 
