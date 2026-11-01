@@ -60,6 +60,7 @@ The artifact is named `audio-<job_id>` and contains only `audio-result.enc`. Aft
 - Workflow metadata, run timestamps, status, and job IDs are visible in this public repository. Do not use story titles or chapter titles in branch names, job IDs, workflow run names, or logs.
 - Anyone with read access to a public repository can access its Actions artifacts. Encryption is therefore mandatory even though artifact retention is short.
 - Anyone who obtains `AUDIO_SHARED_KEY` can decrypt both the uploaded source and returned audio. Protect it as a password.
+- During synthesis, the GitHub runner decrypts the text in memory and sends each segment to the online Edge TTS service over the network. Do not use this workflow for content that must not be processed by a third-party TTS provider.
 
 ## Local development
 
