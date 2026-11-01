@@ -113,7 +113,7 @@ class AudioWorkerTests(unittest.TestCase):
             )
 
         payload = {
-            "text": "Chương 1: Mở đầu\\nNỘI_DUNG",
+            "text": "Chương 1: Mở đầu\nNỘI_DUNG",
             "voice": "vi-VN-NamMinhNeural",
             "rate": 1.0,
         }
