@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from worker import run_job
 from worker.run_job import (
     MAGIC,
+    MAX_CONCURRENT_SEGMENTS,
+    create_audio,
     encrypt_result,
     rate_string,
-    safe_filename,
     split_chapters,
     split_text,
 )
@@ -43,19 +47,95 @@ class AudioWorkerTests(unittest.TestCase):
         self.assertTrue(all(len(part) <= 1000 for part in chunks))
         self.assertEqual("".join(chunks), "a" * 7000)
 
-    def test_rate_and_safe_filename(self):
+    def test_rate(self):
         self.assertEqual(rate_string(1.25), "+25%")
         self.assertEqual(rate_string(0.25), "-50%")
-        self.assertEqual(safe_filename("../title|with/slashes", 2), "002_title_with_slashes.mp3")
 
-    def test_result_is_encrypted_zip(self):
+    def test_parallel_synthesis_is_bounded_and_returns_source_order(self):
+        async def scenario():
+            active = 0
+            peak = 0
+
+            async def fake_synthesize(text, voice, rate, destination):
+                nonlocal active, peak
+                active += 1
+                peak = max(peak, active)
+                # Deliberately finish later segments earlier.
+                await asyncio.sleep(0.03 if text == "first" else 0.005)
+                destination.write_text(text, encoding="utf-8")
+                active -= 1
+
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                jobs = [
+                    ("first", root / "1.mp3"),
+                    ("second", root / "2.mp3"),
+                    ("third", root / "3.mp3"),
+                    ("fourth", root / "4.mp3"),
+                ]
+                paths = await run_job.synthesize_segments(
+                    jobs, "voice", "+0%", max_concurrency=3,
+                    synthesize_fn=fake_synthesize,
+                )
+                self.assertLessEqual(peak, 3)
+                self.assertGreaterEqual(peak, 2)
+                self.assertEqual(paths, [item[1] for item in jobs])
+                self.assertEqual([p.read_text(encoding="utf-8") for p in paths],
+                                 ["first", "second", "third", "fourth"])
+
+        asyncio.run(scenario())
+        self.assertEqual(MAX_CONCURRENT_SEGMENTS, 3)
+
+    def test_create_audio_outputs_one_ordered_audiobook(self):
+        async def fake_synthesize(text, voice, rate, destination):
+            await asyncio.sleep(0)
+            destination.write_text(text, encoding="utf-8")
+
+        def fake_merge(parts, output, work_dir):
+            output.write_text("|".join(path.read_text(encoding="utf-8") for path in parts),
+                              encoding="utf-8")
+
+        payload = {
+            "text": "Chương 1: Đầu\nNỘI_DUNG_1\n\nChương 2: Sau\nNỘI_DUNG_2",
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            out = Path(temporary) / "result"
+            with patch.object(run_job, "split_text",
+                              side_effect=lambda body: [body + "_A", body + "_B"]), \
+                 patch.object(run_job, "synthesize_chunk", side_effect=fake_synthesize), \
+                 patch.object(run_job, "merge_mp3", side_effect=fake_merge):
+                summary = asyncio.run(create_audio(payload, out))
+
+            self.assertEqual(summary["chapters"], 2)
+            self.assertEqual(summary["segments"], 4)
+            self.assertEqual(summary["parallel_segments"], 3)
+            self.assertEqual(sorted(p.name for p in out.iterdir()),
+                             ["audiobook.mp3", "manifest.json"])
+            merged = (out / "audiobook.mp3").read_text(encoding="utf-8")
+            self.assertEqual(
+                merged,
+                "NỘI_DUNG_1_A|NỘI_DUNG_1_B|NỘI_DUNG_2_A|NỘI_DUNG_2_B",
+            )
+            manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["audio_file"], "audiobook.mp3")
+            self.assertEqual(manifest["total_segments"], 4)
+            self.assertEqual(
+                [(chapter["first_segment"], chapter["last_segment"])
+                 for chapter in manifest["chapters"]],
+                [(1, 2), (3, 4)],
+            )
+
+    def test_result_is_encrypted_and_contains_one_audiobook(self):
         key = bytes(range(32))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             output_dir = root / "tracks"
             output_dir.mkdir()
-            (output_dir / "001_Chuong_1.mp3").write_bytes(b"fake-mp3-data")
-            (output_dir / "manifest.json").write_text('{"chapters": 1}', encoding="utf-8")
+            (output_dir / "audiobook.mp3").write_bytes(b"fake-full-audiobook")
+            (output_dir / "manifest.json").write_text('{"audio_file": "audiobook.mp3"}',
+                                                       encoding="utf-8")
             encrypted = root / "audio-result.enc"
 
             encrypt_result(output_dir, encrypted, key)
@@ -66,9 +146,8 @@ class AudioWorkerTests(unittest.TestCase):
             plaintext_zip = AESGCM(key).decrypt(nonce, ciphertext, MAGIC)
 
             with zipfile.ZipFile(__import__("io").BytesIO(plaintext_zip)) as archive:
-                self.assertIn("001_Chuong_1.mp3", archive.namelist())
-                self.assertEqual(archive.read("001_Chuong_1.mp3"), b"fake-mp3-data")
-                self.assertIn("manifest.json", archive.namelist())
+                self.assertEqual(set(archive.namelist()), {"audiobook.mp3", "manifest.json"})
+                self.assertEqual(archive.read("audiobook.mp3"), b"fake-full-audiobook")
 
 
 if __name__ == "__main__":
