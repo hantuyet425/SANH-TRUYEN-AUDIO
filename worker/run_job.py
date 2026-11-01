@@ -98,10 +98,18 @@ def build_audio_plan(
     chapter_manifest: list[dict[str, Any]] = []
     segment_texts: list[str] = []
     for chapter_index, (title, body) in enumerate(chapters, start=1):
+        # Chapter headings are removed from the body by split_chapters().
+        # Put real source headings back at the start of the spoken chapter so
+        # the audiobook does not jump straight into the chapter body.
+        # Synthetic labels are metadata only and must not be narrated.
+        spoken_text = body
+        if title not in {"Phần mở đầu", "Toàn bộ truyện"}:
+            spoken_text = f"{title}. {body}"
+
         chunks = (
-            split_text(body)
+            split_text(spoken_text)
             if max_chars == MAX_SEGMENT_CHARACTERS
-            else split_text(body, max_chars=max_chars)
+            else split_text(spoken_text, max_chars=max_chars)
         )
         if not chunks:
             continue
