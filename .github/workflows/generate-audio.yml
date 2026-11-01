@@ -199,7 +199,8 @@ jobs:
             --payload work/input/payload.json.enc \
             --output work/result \
             --merge-segments work/segments \
-            --segment-limit "${{ inputs.segment_characters }}"
+            --segment-limit "${{ inputs.segment_characters }}" \
+            --max-parallel "${{ inputs.max_parallel }}"
 
       - name: Upload encrypted complete audiobook
         uses: actions/upload-artifact@v4
