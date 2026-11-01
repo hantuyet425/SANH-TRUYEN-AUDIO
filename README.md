@@ -4,8 +4,9 @@ Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 
 - Receives an **AES-256-GCM encrypted** job file from a temporary branch.
 - Runs Vietnamese Edge TTS on a GitHub-hosted Ubuntu runner.
-- Creates one MP3 per detected chapter (or one MP3 if no chapter headings are found).
-- Returns an **AES-256-GCM encrypted ZIP** as a workflow artifact.
+- Splits each chapter into short speech segments and synthesizes up to **3 segments concurrently**.
+- Restores the original source order and joins every segment from every chapter into exactly **one `audiobook.mp3`** using FFmpeg.
+- Returns an **AES-256-GCM encrypted ZIP** containing `audiobook.mp3` and `manifest.json` as a workflow artifact.
 - Deletes the temporary input branch after the job.
 - Keeps plaintext story text and plaintext MP3 files off GitHub branches, artifacts, and logs.
 
@@ -51,7 +52,7 @@ The decrypted payload is UTF-8 JSON:
 
 The app then dispatches `.github/workflows/generate-audio.yml` on `main`, with `job_id` and `payload_branch` inputs. The workflow reads the encrypted file from that branch, decrypts it using `AUDIO_SHARED_KEY`, and synthesizes the audio.
 
-The artifact is named `audio-<job_id>` and contains only `audio-result.enc`. After decryption, that file is a ZIP containing chapter MP3 files and `manifest.json`. The output encryption uses the same AES-256-GCM key and a fresh nonce.
+The artifact is named `audio-<job_id>` and contains only `audio-result.enc`. After decryption, that file is a ZIP containing exactly one complete `audiobook.mp3` plus `manifest.json` (chapter/segment index metadata). All chapter segments are concatenated into the audiobook in their original reading order. Up to three independent TTS requests run concurrently; failed segments are retried up to three times. The output encryption uses the same AES-256-GCM key and a fresh nonce.
 
 ## Important privacy and retention notes
 

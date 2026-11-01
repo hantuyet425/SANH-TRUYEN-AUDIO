@@ -10,12 +10,14 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import edge_tts
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MAGIC = b"SANHAUDIO1"
+MAX_CONCURRENT_SEGMENTS = 3
+TTS_RETRY_ATTEMPTS = 3
 CHAPTER_RE = re.compile(
     r"(?im)^\s*((?:chương|chapter|chap\.?|hồi)\s+[^\n]{1,100}|"
     r"第[0-9０-９零〇○一二两兩三四五六七八九十百千万萬亿億]+[章节回节節集话話篇卷部][^\n]{0,100})\s*$"
@@ -88,33 +90,71 @@ def rate_string(rate: float) -> str:
     return f"{delta:+d}%"
 
 
-def safe_filename(value: str, index: int) -> str:
-    cleaned = re.sub(r"[^\w.-]+", "_", value, flags=re.UNICODE).strip("._")
-    cleaned = cleaned[:48] or f"Chapter_{index:03d}"
-    return f"{index:03d}_{cleaned}.mp3"
-
-
 async def synthesize_chunk(text: str, voice: str, rate: str, output: Path) -> None:
-    communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
-    await communicate.save(str(output))
+    last_error: Exception | None = None
+    for attempt in range(TTS_RETRY_ATTEMPTS):
+        try:
+            communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
+            await communicate.save(str(output))
+            if not output.is_file() or output.stat().st_size == 0:
+                raise RuntimeError("The TTS provider returned an empty audio segment.")
+            return
+        except Exception as exc:
+            last_error = exc
+            output.unlink(missing_ok=True)
+            if attempt + 1 < TTS_RETRY_ATTEMPTS:
+                await asyncio.sleep(2 ** attempt)
+    raise RuntimeError(
+        f"An audio segment failed after {TTS_RETRY_ATTEMPTS} attempts."
+    ) from last_error
+
+
+async def synthesize_segments(
+    segments: list[tuple[str, Path]],
+    voice: str,
+    rate: str,
+    max_concurrency: int = MAX_CONCURRENT_SEGMENTS,
+    synthesize_fn: Callable[[str, str, str, Path], Awaitable[None]] | None = None,
+) -> list[Path]:
+    """Synthesize independent text segments concurrently, preserving source order."""
+    if not segments:
+        return []
+    concurrency = max(1, min(4, int(max_concurrency)))
+    semaphore = asyncio.Semaphore(concurrency)
+    synthesize = synthesize_fn or synthesize_chunk
+
+    async def run_one(text: str, destination: Path) -> None:
+        async with semaphore:
+            await synthesize(text, voice, rate, destination)
+
+    # asyncio.gather returns results in input order, not completion order.
+    await asyncio.gather(*(run_one(text, path) for text, path in segments))
+    return [path for _text, path in segments]
 
 
 def merge_mp3(parts: list[Path], output: Path, work_dir: Path) -> None:
+    """Join MP3 segments in the exact order supplied using ffmpeg's concat demuxer."""
     if not parts:
-        raise RuntimeError("A chapter produced no speech segments.")
-    concat_list = work_dir / "concat.txt"
+        raise RuntimeError("No synthesized audio segments are available to merge.")
+    concat_list = work_dir / "audiobook-concat.txt"
     lines = []
     for part in parts:
         escaped = str(part.resolve()).replace("'", "'\\''")
         lines.append(f"file '{escaped}'")
     concat_list.write_text("\n".join(lines), encoding="utf-8")
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(output)],
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "concat", "-safe", "0", "-i", str(concat_list),
+            "-c", "copy", str(output),
+        ],
         check=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
     )
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError("ffmpeg did not produce a valid audiobook file.")
 
 
 async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, Any]:
@@ -129,33 +169,65 @@ async def create_audio(payload: dict[str, Any], output_dir: Path) -> dict[str, A
         raise RuntimeError("No audio content could be extracted.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    manifest: list[dict[str, Any]] = []
+    chapter_manifest: list[dict[str, Any]] = []
+    segment_jobs: list[tuple[str, Path]] = []
+
     with tempfile.TemporaryDirectory(prefix="sanh-audio-") as temp_name:
         temp_root = Path(temp_name)
+        global_segment_index = 0
+
+        # Plan every segment in source order before starting any network requests.
         for chapter_index, (title, body) in enumerate(chapters, start=1):
-            chapter_dir = temp_root / f"chapter_{chapter_index:04d}"
-            chapter_dir.mkdir()
             chunks = split_text(body)
-            part_paths: list[Path] = []
-            for part_index, chunk in enumerate(chunks, start=1):
-                part_path = chapter_dir / f"part_{part_index:04d}.mp3"
-                await synthesize_chunk(chunk, voice, rate, part_path)
-                part_paths.append(part_path)
-            filename = safe_filename(title, chapter_index)
-            target = output_dir / filename
-            merge_mp3(part_paths, target, chapter_dir)
-            manifest.append({
+            if not chunks:
+                continue
+            first_segment = global_segment_index + 1
+            for chunk in chunks:
+                global_segment_index += 1
+                segment_path = temp_root / f"segment_{global_segment_index:06d}.mp3"
+                segment_jobs.append((chunk, segment_path))
+            chapter_manifest.append({
                 "index": chapter_index,
-                "file": filename,
+                "title": title,
                 "characters": len(body),
                 "segments": len(chunks),
+                "first_segment": first_segment,
+                "last_segment": global_segment_index,
             })
 
+        if not segment_jobs:
+            raise RuntimeError("No audio segments could be created.")
+
+        # Up to three Edge TTS requests run at once. gather preserves source order.
+        ordered_paths = await synthesize_segments(
+            segment_jobs,
+            voice,
+            rate,
+            max_concurrency=MAX_CONCURRENT_SEGMENTS,
+        )
+
+        audiobook_path = output_dir / "audiobook.mp3"
+        merge_mp3(ordered_paths, audiobook_path, temp_root)
+
+    manifest = {
+        "audio_file": "audiobook.mp3",
+        "voice": voice,
+        "rate": rate,
+        "parallel_segments": MAX_CONCURRENT_SEGMENTS,
+        "total_segments": len(segment_jobs),
+        "chapters": chapter_manifest,
+    }
     (output_dir / "manifest.json").write_text(
-        json.dumps({"voice": voice, "rate": rate, "chapters": manifest}, ensure_ascii=False, indent=2),
+        json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return {"chapters": len(manifest), "voice": voice, "rate": rate}
+    return {
+        "chapters": len(chapter_manifest),
+        "segments": len(segment_jobs),
+        "parallel_segments": MAX_CONCURRENT_SEGMENTS,
+        "voice": voice,
+        "rate": rate,
+    }
 
 
 def encrypt_result(output_dir: Path, destination: Path, key: bytes) -> None:
@@ -195,7 +267,12 @@ def main() -> None:
         encrypt_result(audio_dir, args.output / "audio-result.enc", key)
 
     # Only non-sensitive summary fields are printed. Do not add source text or titles.
-    print(f"Audio generation completed: {summary['chapters']} track(s).")
+    print(
+        "Audio generation completed: "
+        f"{summary['chapters']} chapter(s), "
+        f"{summary['segments']} segment(s), "
+        f"up to {summary['parallel_segments']} concurrent TTS requests."
+    )
 
 
 if __name__ == "__main__":
