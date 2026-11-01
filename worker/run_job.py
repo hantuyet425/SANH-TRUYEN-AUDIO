@@ -17,8 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 MAGIC = b"SANHAUDIO1"
 CHAPTER_RE = re.compile(
-    r"(?im)^\\s*((?:chương|chapter|chap\\.?|hồi)\\s+[^\\n]{1,100}|"
-    r"第[0-9０-９零〇○一二两兩三四五六七八九十百千万萬亿億]+[章节回节節集话話篇卷部][^\\n]{0,100})\\s*$"
+    r"(?im)^\s*((?:chương|chapter|chap\.?|hồi)\s+[^\n]{1,100}|"
+    r"第[0-9０-９零〇○一二两兩三四五六七八九十百千万萬亿億]+[章节回节節集话話篇卷部][^\n]{0,100})\s*$"
 )
 
 
@@ -49,7 +49,7 @@ def read_encrypted_payload(path: Path, key: bytes) -> dict[str, Any]:
 
 
 def split_chapters(text: str) -> list[tuple[str, str]]:
-    normalized = text.replace("\\r\\n", "\\n").replace("\\r", "\\n").strip()
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     matches = list(CHAPTER_RE.finditer(normalized))
     if not matches:
         return [("Toàn bộ truyện", normalized)] if normalized else []
@@ -66,7 +66,7 @@ def split_chapters(text: str) -> list[tuple[str, str]]:
 
 
 def split_text(text: str, max_chars: int = 2800) -> list[str]:
-    text = re.sub(r"\\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     parts: list[str] = []
     while len(text) > max_chars:
         window = text[:max_chars]
@@ -89,7 +89,7 @@ def rate_string(rate: float) -> str:
 
 
 def safe_filename(value: str, index: int) -> str:
-    cleaned = re.sub(r"[^\\w.-]+", "_", value, flags=re.UNICODE).strip("._")
+    cleaned = re.sub(r"[^\w.-]+", "_", value, flags=re.UNICODE).strip("._")
     cleaned = cleaned[:48] or f"Chapter_{index:03d}"
     return f"{index:03d}_{cleaned}.mp3"
 
@@ -107,7 +107,7 @@ def merge_mp3(parts: list[Path], output: Path, work_dir: Path) -> None:
     for part in parts:
         escaped = str(part.resolve()).replace("'", "'\\''")
         lines.append(f"file '{escaped}'")
-    concat_list.write_text("\\n".join(lines), encoding="utf-8")
+    concat_list.write_text("\n".join(lines), encoding="utf-8")
     subprocess.run(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(output)],
         check=True,
