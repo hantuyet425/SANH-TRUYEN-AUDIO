@@ -1,0 +1,92 @@
+name: Generate Audio
+run-name: Audio job ${{ inputs.job_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Random job UUID (not a story title)
+        required: true
+        type: string
+      payload_branch:
+        description: Temporary branch containing encrypted input only
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: sanh-audio-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout worker
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install audio system dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Fetch encrypted job payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          PAYLOAD_BRANCH: ${{ inputs.payload_branch }}
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          repo = os.environ["GH_REPOSITORY"]
+          branch = os.environ["PAYLOAD_BRANCH"]
+          job_id = os.environ["JOB_ID"]
+          ref = f"refs/heads/{branch}"
+          subprocess.run(["git", "fetch", "origin", f"{ref}:refs/remotes/origin/{branch}"], check=True)
+          path = f"audio_jobs/{job_id}/payload.json.enc"
+          result = subprocess.run(["git", "show", f"refs/remotes/origin/{branch}:{path}"], check=True, stdout=subprocess.PIPE)
+          os.makedirs("work/input", exist_ok=True)
+          with open("work/input/payload.json.enc", "wb") as f:
+              f.write(result.stdout)
+          PY
+
+      - name: Synthesize and encrypt MP3 tracks
+        id: synthesize
+        env:
+          AUDIO_SHARED_KEY: ${{ secrets.AUDIO_SHARED_KEY }}
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          python worker/run_job.py --payload work/input/payload.json.enc --output work/result
+
+      - name: Upload encrypted result
+        if: ${{ always() && steps.synthesize.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-${{ inputs.job_id }}
+          path: work/result/audio-result.enc
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Delete temporary encrypted input branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          PAYLOAD_BRANCH: ${{ inputs.payload_branch }}
+        run: |
+          gh api --method DELETE "repos/${GH_REPOSITORY}/git/refs/heads/${PAYLOAD_BRANCH}" || true
