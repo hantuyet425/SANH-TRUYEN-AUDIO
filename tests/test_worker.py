@@ -357,7 +357,10 @@ class AudioWorkerTests(unittest.TestCase):
             merged = (out / "audiobook.mp3").read_text(encoding="utf-8")
             self.assertEqual(
                 merged,
-                "NỘI_DUNG_1_A|NỘI_DUNG_1_B|NỘI_DUNG_2_A|NỘI_DUNG_2_B",
+                "Chương 1: Đầu. NỘI_DUNG_1_A|"
+                "Chương 1: Đầu. NỘI_DUNG_1_B|"
+                "Chương 2: Sau. NỘI_DUNG_2_A|"
+                "Chương 2: Sau. NỘI_DUNG_2_B",
             )
             manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["audio_file"], "audiobook.mp3")
