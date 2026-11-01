@@ -414,19 +414,22 @@ def merge_audio_segments(
     output_dir: Path,
     key: bytes,
     max_chars: int = MAX_SEGMENT_CHARACTERS,
+    max_parallel: int = MAX_CONCURRENT_SEGMENTS,
 ) -> dict[str, Any]:
     """Decrypt individual encrypted segment artifacts and build one ordered audiobook."""
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
         raise RuntimeError("Unsupported Vietnamese voice selected.")
+    if max_parallel not in {1, 2, 3, 4, 6, 8, 10}:
+        raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10.")
 
     chapter_manifest, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
     expected_indices = list(range(1, len(segment_texts) + 1))
     actual_files = {
         path.name for path in segments_dir.glob("segment-*.enc") if path.is_file()
     }
-    expected_files = {f"segment-{index:06d}.enc" for index in expected_indices}
+    expected_files = {f"segment-{index}.enc" for index in expected_indices}
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
@@ -439,7 +442,7 @@ def merge_audio_segments(
         temp_root = Path(temp_name)
         clear_paths: list[Path] = []
         for index in expected_indices:
-            encrypted_path = segments_dir / f"segment-{index:06d}.enc"
+            encrypted_path = segments_dir / f"segment-{index}.enc"
             clear_mp3 = temp_root / f"segment_{index:06d}.mp3"
             clear_mp3.write_bytes(decrypt_file(encrypted_path, key))
             clear_paths.append(clear_mp3)
@@ -451,7 +454,7 @@ def merge_audio_segments(
         "audio_file": "audiobook.mp3",
         "voice": voice,
         "rate": rate,
-        "parallel_segments": "workflow matrix max-parallel",
+        "parallel_segments": max_parallel,
         "segment_character_limit": max_chars,
         "total_segments": len(segment_texts),
         "chapters": chapter_manifest,
@@ -464,6 +467,7 @@ def merge_audio_segments(
     return {
         "segments": len(segment_texts),
         "segment_character_limit": max_chars,
+        "parallel_segments": max_parallel,
         "voice": voice,
         "rate": rate,
     }
@@ -586,6 +590,7 @@ def main() -> None:
     parser.add_argument("--segment-index", type=int)
     parser.add_argument("--merge-segments", type=Path)
     parser.add_argument("--segment-limit", type=int, default=MAX_SEGMENT_CHARACTERS)
+    parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10), default=MAX_CONCURRENT_SEGMENTS)
     args = parser.parse_args()
 
     key = load_key()
@@ -633,7 +638,8 @@ def main() -> None:
 
     if args.merge_segments is not None:
         summary = merge_audio_segments(
-            payload, args.merge_segments, args.output, key, args.segment_limit
+            payload, args.merge_segments, args.output, key,
+            args.segment_limit, args.max_parallel
         )
         print(
             f"Merged {summary['segments']} segment(s) into one encrypted audiobook."
