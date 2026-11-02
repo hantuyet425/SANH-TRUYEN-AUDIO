@@ -152,8 +152,8 @@ class AudioWorkerTests(unittest.TestCase):
             self.assertEqual(summary["segment_index"], 2)
             self.assertEqual(summary["total_segments"], 2)
             self.assertEqual(summary["characters"], 5)
-            self.assertEqual([p.name for p in output.iterdir()], ["segment-2.mp3"])
-            self.assertEqual((output / "segment-2.mp3").read_bytes(), b"tts:FGHIJ")
+            self.assertEqual([p.name for p in output.iterdir()], ["tts 002-002.mp3"])
+            self.assertEqual((output / "tts 002-002.mp3").read_bytes(), b"tts:FGHIJ")
 
     def test_individual_plain_segments_merge_in_original_order(self):
         def fake_merge(parts, output, work_dir):
@@ -164,16 +164,18 @@ class AudioWorkerTests(unittest.TestCase):
             segments = root / "segments"
             segments.mkdir()
             for index, value in enumerate((b"audio-AB", b"audio-CD", b"audio-EF"), start=1):
-                (segments / f"segment-{index}.mp3").write_bytes(value)
+                (segments / f"tts {index:03d}-003.mp3").write_bytes(value)
             with patch.object(run_job, "merge_mp3", side_effect=fake_merge):
                 summary = merge_audio_segments(
-                    payload, segments, root / "result", max_chars=2, max_parallel=100
+                    payload, segments, root / "result", max_chars=2, max_parallel=100,
+                    output_name="au7.mp3",
                 )
             self.assertEqual(summary["segments"], 3)
-            self.assertEqual((root / "result" / "audiobook.mp3").read_bytes(),
+            self.assertEqual((root / "result" / "au7.mp3").read_bytes(),
                              b"audio-AB|audio-CD|audio-EF")
             manifest = json.loads((root / "result" / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["total_segments"], 3)
+            self.assertEqual(manifest["audio_file"], "au7.mp3")
             self.assertEqual(manifest["segment_character_limit"], 2)
             self.assertEqual(manifest["parallel_segments"], 100)
 
@@ -183,7 +185,7 @@ class AudioWorkerTests(unittest.TestCase):
             root = Path(temporary)
             segments = root / "segments"
             segments.mkdir()
-            (segments / "segment-1.mp3").write_bytes(b"audio")
+            (segments / "tts 001-003.mp3").write_bytes(b"audio")
             with self.assertRaisesRegex(RuntimeError, "Segment artifacts are incomplete"):
                 merge_audio_segments(payload, segments, root / "result", max_chars=2)
 
