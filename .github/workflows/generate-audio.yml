@@ -78,7 +78,7 @@ jobs:
           job_id = os.environ["JOB_ID"]
           ref = f"refs/heads/{branch}"
           subprocess.run(["git", "fetch", "origin", f"{ref}:refs/remotes/origin/{branch}"], check=True)
-          path = f"audio_jobs/{job_id}/payload.json.enc"
+          path = f"audio_jobs/{job_id}/payload.json"
           result = subprocess.run(["git", "show", f"refs/remotes/origin/{branch}:{path}"], check=True, stdout=subprocess.PIPE)
           os.makedirs("work/input", exist_ok=True)
           with open("work/input/payload.json", "wb") as f:
@@ -88,7 +88,7 @@ jobs:
       - name: Build one matrix entry for every segment
         id: plan
         env:
-                    JOB_ID: ${{ inputs.job_id }}
+          JOB_ID: ${{ inputs.job_id }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json \
@@ -136,7 +136,7 @@ jobs:
 
       - name: Synthesize exactly this segment
         env:
-                    JOB_ID: ${{ inputs.job_id }}
+          JOB_ID: ${{ inputs.job_id }}
           SEGMENT_INDEX: ${{ matrix.segment_index }}
         run: |
           python worker/run_job.py \
@@ -192,7 +192,7 @@ jobs:
 
       - name: Merge all MP3 segments in original order into one audiobook
         env:
-                    JOB_ID: ${{ inputs.job_id }}
+          JOB_ID: ${{ inputs.job_id }}
         run: |
           python worker/run_job.py \
             --payload work/input/payload.json \
