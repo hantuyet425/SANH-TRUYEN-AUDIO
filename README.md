@@ -19,7 +19,7 @@ Open **Actions → Generate Audio MP3 → Run workflow**.
 | Workflow input | Default | Purpose |
 |---|---:|---|
 | `segment_characters` | `7000` | Maximum character count sent to one TTS segment job |
-| `max_parallel` | `100` | Maximum number of segment jobs requested to run simultaneously |
+| `max_parallel` | `30` | Maximum number of segment jobs requested to run simultaneously |
 
 GitHub may queue jobs when runner capacity or account concurrency limits are reached. A workflow run can contain at most 256 matrix jobs; the preparation step stops with an error if the story would exceed that limit.
 
