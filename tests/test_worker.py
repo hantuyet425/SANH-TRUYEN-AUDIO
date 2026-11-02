@@ -68,14 +68,14 @@ class AudioWorkerTests(unittest.TestCase):
         self.assertTrue(all(len(part) <= 1000 for part in chunks))
         self.assertEqual("".join(chunks), "a" * 7000)
 
-    def test_default_segments_are_at_most_7000_characters(self):
-        source = "a" * 12001
+    def test_default_segments_are_at_most_5000_characters(self):
+        source = "a" * 10001
         chunks = split_text(source)
-        self.assertEqual([len(part) for part in chunks], [7000, 5001])
+        self.assertEqual([len(part) for part in chunks], [5000, 5000, 1] )
         self.assertEqual("".join(chunks), source)
 
     def test_default_segment_size_constant(self):
-        self.assertEqual(MAX_SEGMENT_CHARACTERS, 7000)
+        self.assertEqual(MAX_SEGMENT_CHARACTERS, 5000)
 
     def test_rate(self):
         self.assertEqual(rate_string(1.25), "+25%")
@@ -229,7 +229,7 @@ class AudioWorkerTests(unittest.TestCase):
             )
             manifest = json.loads((root / "result" / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["parallel_segments"], 4)
-            self.assertEqual(manifest["segment_character_limit"], 7000)
+            self.assertEqual(manifest["segment_character_limit"], 5000)
             self.assertEqual(manifest["total_segments"], 5)
 
     def test_merge_rejects_missing_matrix_shard(self):
@@ -262,7 +262,7 @@ class AudioWorkerTests(unittest.TestCase):
                 summary = asyncio.run(create_audio(payload, out))
             self.assertEqual(summary["chapters"], 2)
             self.assertEqual(summary["segments"], 4)
-            self.assertEqual(summary["segment_character_limit"], 7000)
+            self.assertEqual(summary["segment_character_limit"], 5000)
             self.assertEqual(sorted(p.name for p in out.iterdir()),
                              ["audiobook.mp3", "manifest.json"])
             self.assertEqual(
