@@ -206,7 +206,7 @@ jobs:
       - name: Upload completed audiobook MP3
         uses: actions/upload-artifact@v4
         with:
-          name: audio-${{ inputs.job_id }}
+          name: au${{ github.run_number }}
           path: |
             work/result/au${{ github.run_number }}.mp3
             work/result/manifest.json
