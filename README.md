@@ -3,7 +3,7 @@
 Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 
 - Receives a plain UTF-8 JSON job payload from a temporary branch.
-- Splits the story into speech segments, with a default maximum of 7,000 characters per segment.
+- Splits the story into speech segments, with a default maximum of 5,000 characters per segment.
 - Creates one visible GitHub Actions matrix job per segment, named `TTS 001/207`, `TTS 002/207`, and so on.
 - Synthesizes each segment with Vietnamese Edge TTS and uploads it as a normal MP3 file such as `tts 001-207.mp3` (the first number is the segment and the second is the total).
 - Merges every segment in source order with FFmpeg into exactly one final `auN.mp3` file (`au1.mp3`, `au2.mp3`, `au3.mp3`, ...).
@@ -18,7 +18,7 @@ Open **Actions → Generate Audio MP3 → Run workflow**.
 
 | Workflow input | Default | Purpose |
 |---|---:|---|
-| `segment_characters` | `7000` | Maximum character count sent to one TTS segment job |
+| `segment_characters` | `5000` | Maximum character count sent to one TTS segment job |
 | `max_parallel` | `30` | Maximum number of segment jobs requested to run simultaneously |
 
 GitHub may queue jobs when runner capacity or account concurrency limits are reached. A workflow run can contain at most 256 matrix jobs; the preparation step stops with an error if the story would exceed that limit.
