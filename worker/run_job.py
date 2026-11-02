@@ -356,7 +356,7 @@ async def create_audio_segment(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    destination = output_dir / f"segment-{segment_index}.mp3"
+    destination = output_dir / f"tts {segment_index:03d}-{len(segment_texts):03d}.mp3"
     await synthesize_chunk(segment_texts[segment_index - 1], voice, rate, destination)
     return {
         "segment_index": segment_index,
@@ -372,21 +372,27 @@ def merge_audio_segments(
     output_dir: Path,
     max_chars: int = MAX_SEGMENT_CHARACTERS,
     max_parallel: int = DEFAULT_MAX_PARALLEL_JOBS,
+    output_name: str = "au1.mp3",
 ) -> dict[str, Any]:
-    """Merge plain MP3 segment files into one ordered audiobook."""
+    """Merge plain MP3 segment files into one ordered auN.mp3 audiobook."""
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
         raise RuntimeError("Unsupported Vietnamese voice selected.")
     if max_parallel not in {1, 2, 3, 4, 6, 8, 10, 20, 50, 100}:
         raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10, 20, 50, 100.")
+    if not re.fullmatch(r"au[1-9][0-9]*\.mp3", output_name):
+        raise RuntimeError("output_name must use the au1.mp3, au2.mp3, ... naming format.")
 
     chapter_manifest, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
     expected_indices = list(range(1, len(segment_texts) + 1))
     actual_files = {
-        path.name for path in segments_dir.glob("segment-*.mp3") if path.is_file()
+        path.name for path in segments_dir.glob("tts *.mp3") if path.is_file()
     }
-    expected_files = {f"segment-{index}.mp3" for index in expected_indices}
+    expected_files = {
+        f"tts {index:03d}-{len(segment_texts):03d}.mp3"
+        for index in expected_indices
+    }
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
@@ -399,16 +405,16 @@ def merge_audio_segments(
         temp_root = Path(temp_name)
         ordered_paths: list[Path] = []
         for index in expected_indices:
-            source = segments_dir / f"segment-{index}.mp3"
+            source = segments_dir / f"tts {index:03d}-{len(segment_texts):03d}.mp3"
             destination = temp_root / f"segment_{index:06d}.mp3"
             destination.write_bytes(source.read_bytes())
             ordered_paths.append(destination)
 
-        audiobook = output_dir / "audiobook.mp3"
+        audiobook = output_dir / output_name
         merge_mp3(ordered_paths, audiobook, temp_root)
 
     manifest = {
-        "audio_file": "audiobook.mp3",
+        "audio_file": output_name,
         "voice": voice,
         "rate": rate,
         "parallel_segments": max_parallel,
@@ -426,6 +432,7 @@ def merge_audio_segments(
         "parallel_segments": max_parallel,
         "voice": voice,
         "rate": rate,
+        "audio_file": output_name,
     }
 
 
@@ -523,6 +530,7 @@ def main() -> None:
     parser.add_argument("--merge-segments", type=Path)
     parser.add_argument("--segment-limit", type=int, default=MAX_SEGMENT_CHARACTERS)
     parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10, 20, 50, 100), default=DEFAULT_MAX_PARALLEL_JOBS)
+    parser.add_argument("--output-name", default="au1.mp3")
     args = parser.parse_args()
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -562,8 +570,8 @@ def main() -> None:
             )
         )
         print(
-            f"TTS segment {summary['segment_index']}/"
-            f"{summary['total_segments']} saved as {summary['file']} "
+            f"TTS {summary['segment_index']:03d}/{summary['total_segments']:03d} "
+            f"saved as {summary['file']} "
             f"({summary['characters']} characters)."
         )
         return
@@ -571,10 +579,10 @@ def main() -> None:
     if args.merge_segments is not None:
         summary = merge_audio_segments(
             payload, args.merge_segments, args.output,
-            args.segment_limit, args.max_parallel
+            args.segment_limit, args.max_parallel, args.output_name
         )
         print(
-            f"Merged {summary['segments']} segment(s) into one plain audiobook.mp3."
+            f"Merged {summary['segments']} segment(s) into {summary['audio_file']}."
         )
         return
 
