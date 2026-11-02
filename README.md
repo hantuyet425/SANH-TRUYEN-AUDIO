@@ -5,7 +5,7 @@ Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 - Receives a plain UTF-8 JSON job payload from a temporary branch.
 - Splits the story into speech segments, with a default maximum of 7,000 characters per segment.
 - Creates one visible GitHub Actions matrix job per segment.
-- Synthesizes each segment with Vietnamese Edge TTS and uploads it as a normal `.mp3` artifact.
+- Synthesizes each segment with Vietnamese Edge TTS and uploads it as a normal MP3 file such as `tts 001-207.mp3` (the first number is the segment and the second is the total).
 - Merges every segment in source order with FFmpeg into exactly one `audiobook.mp3`.
 - Publishes `audiobook.mp3` and `manifest.json` as the final artifact named `audio-<job_id>`.
 - Deletes the temporary input branch after the workflow.
@@ -14,7 +14,7 @@ Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 
 ## Workflow settings
 
-Open **Actions → Generate Audio → Run workflow**.
+Open **Actions → Generate Audio MP3 → Run workflow**.
 
 | Workflow input | Default | Purpose |
 |---|---:|---|
@@ -49,9 +49,9 @@ The file is plain UTF-8 JSON:
 }
 ```
 
-The app dispatches `.github/workflows/generate-audio.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates the matrix. Each matrix job downloads the payload, synthesizes one segment, and uploads `segment-<index>.mp3`. The merge job downloads all segment artifacts, validates that every expected segment exists exactly once, and concatenates them in source order.
+The app dispatches `.github/workflows/generate-audio-mp3.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates the matrix. Each matrix job downloads the payload, synthesizes one segment, and uploads a normal MP3 such as `tts 001-207.mp3`. The merge job downloads all segment artifacts, validates that every expected segment exists exactly once, and concatenates them in source order.
 
-The final artifact contains the ordinary files `audiobook.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 as `au1.mp3`, `au2.mp3`, and so on.
+The final artifact contains the ordinary files `auN.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 as `au1.mp3`, `au2.mp3`, and so on.
 
 ## Privacy and retention
 
@@ -67,4 +67,4 @@ During synthesis, each segment is sent to the online Edge TTS service. Do not us
 python -m pip install -r requirements.txt
 ```
 
-`worker/run_job.py` runs inside GitHub Actions and needs `ffmpeg` for audiobook merging.
+`worker/run_job.py` runs inside GitHub Actions and needs `ffmpeg` for audiobook merging. GitHub Actions packages artifacts as ZIP downloads; the files inside those ZIPs are plain `.mp3` files.
