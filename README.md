@@ -4,10 +4,10 @@ Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 
 - Receives a plain UTF-8 JSON job payload from a temporary branch.
 - Splits the story into speech segments, with a default maximum of 7,000 characters per segment.
-- Creates one visible GitHub Actions matrix job per segment.
+- Creates one visible GitHub Actions matrix job per segment, named `TTS 001/207`, `TTS 002/207`, and so on.
 - Synthesizes each segment with Vietnamese Edge TTS and uploads it as a normal MP3 file such as `tts 001-207.mp3` (the first number is the segment and the second is the total).
-- Merges every segment in source order with FFmpeg into exactly one `audiobook.mp3`.
-- Publishes `audiobook.mp3` and `manifest.json` as the final artifact named `audio-<job_id>`.
+- Merges every segment in source order with FFmpeg into exactly one final `auN.mp3` file (`au1.mp3`, `au2.mp3`, `au3.mp3`, ...).
+- Publishes `auN.mp3` and `manifest.json` as the final artifact named `auN`.
 - Deletes the temporary input branch after the workflow.
 
 **No AES key, encryption secret, or decryption step is required.** The desktop app needs only a GitHub Fine-grained Personal Access Token.
@@ -51,7 +51,7 @@ The file is plain UTF-8 JSON:
 
 The app dispatches `.github/workflows/generate-audio-mp3.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates the matrix. Each matrix job downloads the payload, synthesizes one segment, and uploads a normal MP3 such as `tts 001-207.mp3`. The merge job downloads all segment artifacts, validates that every expected segment exists exactly once, and concatenates them in source order.
 
-The final artifact contains the ordinary files `auN.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 as `au1.mp3`, `au2.mp3`, and so on.
+The final artifact is named `auN` and contains the ordinary files `auN.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 as `au1.mp3`, `au2.mp3`, and so on.
 
 ## Privacy and retention
 
