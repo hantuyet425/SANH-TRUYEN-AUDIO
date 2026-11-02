@@ -2,86 +2,69 @@
 
 Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 
-- Receives an **AES-256-GCM encrypted** job file from a temporary branch.
-- Uses a preparation job to split chapter text into speech segments of at most the configured character limit.
-- Creates **one visible GitHub Actions matrix job per segment**. In the run's **All jobs** list, each item is named \`TTS segment 001 / N\`, \`TTS segment 002 / N\`, and so on; each has its own queued, in-progress, success, or failure status.
-- Limits simultaneous segment jobs with the \`max_parallel\` workflow input. The default is **4**: when one segment job completes, GitHub starts the next queued segment automatically.
-- Synthesizes each segment with Vietnamese Edge TTS, retries failed TTS requests up to three times, and uploads that segment's MP3 only as an AES-256-GCM encrypted artifact.
-- Runs a final merge job that verifies every segment artifact exists exactly once, restores original source order, and produces exactly **one \`audiobook.mp3\`** using FFmpeg.
-- Returns one **AES-256-GCM encrypted ZIP** containing \`audiobook.mp3\` and \`manifest.json\` as the final workflow artifact.
-- Deletes the temporary encrypted input branch after the workflow.
-- Keeps plaintext story text and plaintext MP3 files off GitHub branches, artifacts, and logs.
+- Receives a plain UTF-8 JSON job payload from a temporary branch.
+- Splits the story into speech segments, with a default maximum of 7,000 characters per segment.
+- Creates one visible GitHub Actions matrix job per segment.
+- Synthesizes each segment with Vietnamese Edge TTS and uploads it as a normal `.mp3` artifact.
+- Merges every segment in source order with FFmpeg into exactly one `audiobook.mp3`.
+- Publishes `audiobook.mp3` and `manifest.json` as the final artifact named `audio-<job_id>`.
+- Deletes the temporary input branch after the workflow.
 
-## Easy workflow settings
+**No AES key, encryption secret, or decryption step is required.** The desktop app needs only a GitHub Fine-grained Personal Access Token.
 
-Open **Actions → Generate Audio → Run workflow**. The two controls are also declared near the top of \`.github/workflows/generate-audio.yml\`:
+## Workflow settings
+
+Open **Actions → Generate Audio → Run workflow**.
 
 | Workflow input | Default | Purpose |
 |---|---:|---|
-| \`segment_characters\` | \`7000\` | Maximum character count sent to one TTS segment job |
-| \`max_parallel\` | \`100\` | Maximum number of segment jobs allowed to run at the same time |
+| `segment_characters` | `7000` | Maximum character count sent to one TTS segment job |
+| `max_parallel` | `100` | Maximum number of segment jobs requested to run simultaneously |
 
-To change the defaults permanently, edit the \`default\` value for these two inputs in \`.github/workflows/generate-audio.yml\`. To change settings for one manual run, select different values in the **Run workflow** form. The desktop app sends only the required \`job_id\` and \`payload_branch\`; GitHub applies these workflow defaults automatically.
-
-The \`max_parallel\` choice currently offers 1, 2, 3, 4, 6, 8, 10, 20, 50, or 100. The default is 100. This is the workflow's requested ceiling, not a guarantee that 100 GitHub-hosted runners can start simultaneously: GitHub applies an account-wide concurrency limit based on its plan, and excess matrix jobs remain queued until runner capacity is available.
-
-**GitHub matrix limit:** one workflow run can contain at most 256 matrix jobs. The preparation job stops with a clear error before synthesis if the selected segment size would create more than 256 segments. For a very long book, increase \`segment_characters\` or divide the source into multiple book files.
+GitHub may queue jobs when runner capacity or account concurrency limits are reached. A workflow run can contain at most 256 matrix jobs; the preparation step stops with an error if the story would exceed that limit.
 
 ## One-time setup
 
-1. In **Settings → Secrets and variables → Actions → New repository secret**, add:
-   - Name: \`AUDIO_SHARED_KEY\`
-   - Value: a 32-byte key encoded as Base64 (generate it with \`python tools/generate_shared_key.py\`).
-2. In Settings → Actions → General, allow GitHub Actions for the repository. The workflow has explicit \`contents: write\` permission because it deletes its temporary input branch.
-3. The desktop app uses GitHub CLI authentication and stores the shared key in Windows Credential Manager. Never paste either value into ChatGPT, source code, a commit, or an issue.
+1. Create a Fine-grained Personal Access Token for this repository only.
+2. Grant **Contents: Read and write** and **Actions: Read and write**.
+3. In the desktop app, open **Phòng thu audio → CẤU HÌNH GITHUB**, paste the token, then click **KIỂM TRA & LƯU TOKEN**.
+4. Ensure GitHub Actions are enabled for this repository. The workflow has `contents: write` permission so its cleanup job can delete the temporary input branch.
+
+There is no `AUDIO_SHARED_KEY` repository secret to create.
 
 ## Wire protocol
 
-The desktop app creates a random branch such as \`audio-job-<uuid>\`, based on \`main\`, and uploads a single file:
+The desktop app creates a random branch named `audio-job-<uuid>` and uploads:
 
-\`audio_jobs/<uuid>/payload.json.enc\`
+`audio_jobs/<uuid>/payload.json`
 
-The file is JSON with:
+The file is plain UTF-8 JSON:
 
-\`\`\`json
-{
-  "version": 1,
-  "nonce": "BASE64_12_BYTE_NONCE",
-  "ciphertext": "BASE64_AES_GCM_CIPHERTEXT_AND_TAG"
-}
-\`\`\`
-
-The decrypted payload is UTF-8 JSON:
-
-\`\`\`json
+```json
 {
   "job_id": "uuid",
   "text": "Vietnamese novel text",
   "voice": "vi-VN-NamMinhNeural",
   "rate": 1.0
 }
-\`\`\`
+```
 
-The app dispatches \`.github/workflows/generate-audio.yml\` on \`main\`, with \`job_id\` and \`payload_branch\` inputs. The workflow decrypts the payload in runner memory and prepares the segment matrix. The encrypted input is uploaded as a short-lived encrypted artifact so each matrix job can download it independently; no plaintext story text is stored in artifacts.
+The app dispatches `.github/workflows/generate-audio.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates the matrix. Each matrix job downloads the payload, synthesizes one segment, and uploads `segment-<index>.mp3`. The merge job downloads all segment artifacts, validates that every expected segment exists exactly once, and concatenates them in source order.
 
-Each matrix job handles exactly one segment. Its name and status are visible separately in **All jobs**, and the \`max_parallel\` setting controls how many of those jobs run concurrently. Each job independently decrypts the source in memory, synthesizes only its assigned segment, encrypts the resulting MP3, and uploads that encrypted segment artifact.
+The final artifact contains the ordinary files `audiobook.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 as `au1.mp3`, `au2.mp3`, and so on.
 
-After all segment jobs succeed, the merge job downloads all encrypted segment artifacts, verifies the exact expected segment index set, decrypts them in runner memory, and concatenates them in source order. The final artifact is named \`audio-<job_id>\` and contains only \`audio-result.enc\`; after decryption it is a ZIP containing exactly one complete \`audiobook.mp3\` plus \`manifest.json\`.
+## Privacy and retention
 
-## Important privacy and retention notes
+**This repository is public and this workflow does not encrypt story text or audio.** While a job is running, the source text is present in its temporary public Git branch and in the short-lived payload artifact. The generated MP3 segment artifacts and final audiobook artifact are also ordinary, unencrypted files. Anyone who can read this public repository may be able to access branch contents while published and workflow artifacts while they remain available.
 
-- The temporary Git branch contains ciphertext only. Branch deletion removes the reference, but Git objects may remain reachable for some time; ciphertext remains encrypted.
-- The encrypted input artifact and all encrypted segment artifacts expire after **1 day**.
-- Workflow metadata, segment numbers, run timestamps, status, and job IDs are visible in this public repository. Do not use story titles or chapter titles in branch names, job IDs, workflow run names, or logs.
-- Anyone with read access to a public repository can access its Actions artifacts. Encryption is therefore mandatory even though artifact retention is short.
-- Anyone who obtains \`AUDIO_SHARED_KEY\` can decrypt both the uploaded source and returned audio. Protect it as a password.
-- During synthesis, the GitHub runner decrypts the text in memory and sends each segment to the online Edge TTS service over the network. Do not use this workflow for content that must not be processed by a third-party TTS provider.
+The cleanup job deletes the temporary branch reference, but deleting a branch is not a guarantee that the underlying Git objects are immediately erased. Artifacts expire after **1 day**. Do not use this workflow for private, confidential, or copyrighted text/audio that must not be publicly accessible. To reduce exposure without AES, make this worker repository private before sending story text to it.
+
+During synthesis, each segment is sent to the online Edge TTS service. Do not use this workflow for content that must not be processed by a third-party TTS provider.
 
 ## Local development
 
-\`\`\`bash
+```bash
 python -m pip install -r requirements.txt
-python tools/generate_shared_key.py
-\`\`\`
+```
 
-\`worker/run_job.py\` is intended to run inside GitHub Actions; it requires \`ffmpeg\`, \`AUDIO_SHARED_KEY\`, and a valid encrypted input file.
+`worker/run_job.py` runs inside GitHub Actions and needs `ffmpeg` for audiobook merging.
