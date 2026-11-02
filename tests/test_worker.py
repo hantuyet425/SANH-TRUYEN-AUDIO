@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from worker import run_job
 from worker.run_job import (
+    DEFAULT_MAX_PARALLEL_JOBS,
     MAX_CONCURRENT_SEGMENTS,
     MAX_SEGMENT_CHARACTERS,
     build_audio_plan,
@@ -28,6 +29,9 @@ from worker.run_job import (
 
 
 class AudioWorkerTests(unittest.TestCase):
+    def test_default_max_parallel_jobs_is_30(self):
+        self.assertEqual(DEFAULT_MAX_PARALLEL_JOBS, 30)
+
     def test_split_vietnamese_chapters(self):
         source = "Chương 1: Mở đầu\nNội dung một.\n\nChương 2: Tiếp theo\nNội dung hai."
         chapters = split_chapters(source)
@@ -167,7 +171,7 @@ class AudioWorkerTests(unittest.TestCase):
                 (segments / f"tts {index:03d}-003.mp3").write_bytes(value)
             with patch.object(run_job, "merge_mp3", side_effect=fake_merge):
                 summary = merge_audio_segments(
-                    payload, segments, root / "result", max_chars=2, max_parallel=100,
+                    payload, segments, root / "result", max_chars=2, max_parallel=30,
                     output_name="au7.mp3",
                 )
             self.assertEqual(summary["segments"], 3)
@@ -177,7 +181,7 @@ class AudioWorkerTests(unittest.TestCase):
             self.assertEqual(manifest["total_segments"], 3)
             self.assertEqual(manifest["audio_file"], "au7.mp3")
             self.assertEqual(manifest["segment_character_limit"], 2)
-            self.assertEqual(manifest["parallel_segments"], 100)
+            self.assertEqual(manifest["parallel_segments"], 30)
 
     def test_merge_rejects_a_missing_individual_segment(self):
         payload = {"text": "ABCDEF", "voice": "vi-VN-NamMinhNeural", "rate": 1.0}
