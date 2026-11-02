@@ -148,7 +148,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tts-${{ matrix.segment_label }}-of-${{ needs.prepare.outputs.segment_count }}
-          path: work/segment/tts ${{ matrix.segment_label }}-${{ needs.prepare.outputs.segment_count }}.mp3
+          path: work/segment/tts ${{ matrix.segment_label }}-*.mp3
           if-no-files-found: error
           retention-days: 1
 
