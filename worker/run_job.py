@@ -15,7 +15,7 @@ import edge_tts
 
 MAX_CONCURRENT_SEGMENTS = 4  # Legacy in-process path
 DEFAULT_MAX_PARALLEL_JOBS = 30  # GitHub Actions per-segment matrix
-MAX_SEGMENT_CHARACTERS = 7000
+MAX_SEGMENT_CHARACTERS = 5000
 TTS_RETRY_ATTEMPTS = 3
 CHAPTER_RE = re.compile(
     r"(?im)^\s*((?:chương|chapter|chap\.?|hồi)\s+[^\n]{1,100}|"
