@@ -379,7 +379,7 @@ def merge_audio_segments(
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
         raise RuntimeError("Unsupported Vietnamese voice selected.")
-    if max_parallel not in {1, 2, 3, 4, 6, 8, 10, 20, 50, 100}:
+    if max_parallel not in {1, 2, 3, 4, 6, 8, 10, 20, 30}:
         raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10, 20, 30.")
     if not re.fullmatch(r"au[1-9][0-9]*\.mp3", output_name):
         raise RuntimeError("output_name must use the au1.mp3, au2.mp3, ... naming format.")
