@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import json
 import os
 import re
@@ -13,9 +12,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import edge_tts
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-MAGIC = b"SANHAUDIO1"
 MAX_CONCURRENT_SEGMENTS = 4  # Legacy in-process path
 DEFAULT_MAX_PARALLEL_JOBS = 100  # GitHub Actions per-segment matrix
 MAX_SEGMENT_CHARACTERS = 7000
@@ -26,29 +23,16 @@ CHAPTER_RE = re.compile(
 )
 
 
-def load_key() -> bytes:
-    encoded = os.environ.get("AUDIO_SHARED_KEY", "").strip()
-    if not encoded:
-        raise RuntimeError("Repository secret AUDIO_SHARED_KEY is missing.")
+def read_payload(path: Path) -> dict[str, Any]:
+    """Read a plain JSON job payload from the temporary GitHub branch."""
     try:
-        key = base64.b64decode(encoded, validate=True)
-    except Exception as exc:
-        raise RuntimeError("AUDIO_SHARED_KEY is not valid Base64.") from exc
-    if len(key) != 32:
-        raise RuntimeError("AUDIO_SHARED_KEY must decode to exactly 32 bytes.")
-    return key
-
-
-def read_encrypted_payload(path: Path, key: bytes) -> dict[str, Any]:
-    envelope = json.loads(path.read_text(encoding="utf-8"))
-    if envelope.get("version") != 1:
-        raise RuntimeError("Unsupported encrypted payload version.")
-    nonce = base64.b64decode(envelope["nonce"], validate=True)
-    ciphertext = base64.b64decode(envelope["ciphertext"], validate=True)
-    clear = AESGCM(key).decrypt(nonce, ciphertext, MAGIC)
-    payload = json.loads(clear.decode("utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The audio job payload is not valid UTF-8 JSON.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("The audio job payload must be a JSON object.")
     if not isinstance(payload.get("text"), str) or not payload["text"].strip():
-        raise RuntimeError("The decrypted job contains no text.")
+        raise RuntimeError("The audio job contains no text.")
     return payload
 
 
@@ -295,11 +279,10 @@ async def create_audio(
 async def create_audio_shard(
     payload: dict[str, Any],
     output_dir: Path,
-    key: bytes,
     shard_index: int,
     shard_count: int = MAX_CONCURRENT_SEGMENTS,
 ) -> dict[str, Any]:
-    """Synthesize this matrix worker's share, then encrypt its MP3 segments."""
+    """Synthesize this worker's share and package plain MP3 segments in a ZIP."""
     if shard_count != MAX_CONCURRENT_SEGMENTS:
         raise RuntimeError(f"Exactly {MAX_CONCURRENT_SEGMENTS} worker shards are required.")
     if not 0 <= shard_index < shard_count:
@@ -321,8 +304,6 @@ async def create_audio_shard(
         temp_root = Path(temp_name)
         for index, chunk in assigned:
             destination = temp_root / f"segment_{index:06d}.mp3"
-            # One TTS request at a time per runner; the four matrix workers
-            # provide the four-way parallelism visible in GitHub Actions.
             await synthesize_chunk(chunk, voice, rate, destination)
 
         partial_manifest = {
@@ -342,13 +323,11 @@ async def create_audio_shard(
         )
         partial_zip = output_dir / f"partial-{shard_index}.zip"
         with zipfile.ZipFile(
-            partial_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
+            partial_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1
         ) as archive:
             for path in sorted(temp_root.iterdir()):
                 if path.is_file():
                     archive.write(path, arcname=path.name)
-        encrypt_file(partial_zip, output_dir / f"partial-{shard_index}.enc", key)
-        partial_zip.unlink(missing_ok=True)
 
     return {
         "shard_index": shard_index,
@@ -358,40 +337,13 @@ async def create_audio_shard(
     }
 
 
-def decrypt_file(source: Path, key: bytes) -> bytes:
-    try:
-        envelope = json.loads(source.read_text(encoding="utf-8"))
-        if envelope.get("version") != 1:
-            raise ValueError("unsupported encrypted envelope")
-        nonce = base64.b64decode(envelope["nonce"], validate=True)
-        ciphertext = base64.b64decode(envelope["ciphertext"], validate=True)
-        return AESGCM(key).decrypt(nonce, ciphertext, MAGIC)
-    except Exception as exc:
-        raise RuntimeError(f"Could not decrypt encrypted audio package: {source.name}") from exc
-
-
-def encrypt_file(source: Path, destination: Path, key: bytes) -> None:
-    plaintext = source.read_bytes()
-    nonce = os.urandom(12)
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, MAGIC)
-    envelope = {
-        "version": 1,
-        "nonce": base64.b64encode(nonce).decode("ascii"),
-        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
-    }
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(envelope, separators=(",", ":")), encoding="utf-8")
-
-
-
 async def create_audio_segment(
     payload: dict[str, Any],
     output_dir: Path,
-    key: bytes,
     segment_index: int,
     max_chars: int = MAX_SEGMENT_CHARACTERS,
 ) -> dict[str, Any]:
-    """Synthesize exactly one planned segment and save only its encrypted MP3."""
+    """Synthesize exactly one planned segment and save it as an ordinary MP3."""
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
@@ -404,18 +356,13 @@ async def create_audio_segment(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"sanh-audio-segment-{segment_index}-") as temp_name:
-        temp_root = Path(temp_name)
-        clear_mp3 = temp_root / f"segment_{segment_index:06d}.mp3"
-        await synthesize_chunk(segment_texts[segment_index - 1], voice, rate, clear_mp3)
-        encrypted_path = output_dir / f"segment-{segment_index}.enc"
-        encrypt_file(clear_mp3, encrypted_path, key)
-
+    destination = output_dir / f"segment-{segment_index}.mp3"
+    await synthesize_chunk(segment_texts[segment_index - 1], voice, rate, destination)
     return {
         "segment_index": segment_index,
         "total_segments": len(segment_texts),
         "characters": len(segment_texts[segment_index - 1]),
-        "encrypted_file": encrypted_path.name,
+        "file": destination.name,
     }
 
 
@@ -423,11 +370,10 @@ def merge_audio_segments(
     payload: dict[str, Any],
     segments_dir: Path,
     output_dir: Path,
-    key: bytes,
     max_chars: int = MAX_SEGMENT_CHARACTERS,
     max_parallel: int = DEFAULT_MAX_PARALLEL_JOBS,
 ) -> dict[str, Any]:
-    """Decrypt individual encrypted segment artifacts and build one ordered audiobook."""
+    """Merge plain MP3 segment files into one ordered audiobook."""
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
@@ -438,9 +384,9 @@ def merge_audio_segments(
     chapter_manifest, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
     expected_indices = list(range(1, len(segment_texts) + 1))
     actual_files = {
-        path.name for path in segments_dir.glob("segment-*.enc") if path.is_file()
+        path.name for path in segments_dir.glob("segment-*.mp3") if path.is_file()
     }
-    expected_files = {f"segment-{index}.enc" for index in expected_indices}
+    expected_files = {f"segment-{index}.mp3" for index in expected_indices}
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
@@ -451,15 +397,15 @@ def merge_audio_segments(
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="sanh-audio-merge-") as temp_name:
         temp_root = Path(temp_name)
-        clear_paths: list[Path] = []
+        ordered_paths: list[Path] = []
         for index in expected_indices:
-            encrypted_path = segments_dir / f"segment-{index}.enc"
-            clear_mp3 = temp_root / f"segment_{index:06d}.mp3"
-            clear_mp3.write_bytes(decrypt_file(encrypted_path, key))
-            clear_paths.append(clear_mp3)
+            source = segments_dir / f"segment-{index}.mp3"
+            destination = temp_root / f"segment_{index:06d}.mp3"
+            destination.write_bytes(source.read_bytes())
+            ordered_paths.append(destination)
 
         audiobook = output_dir / "audiobook.mp3"
-        merge_mp3(clear_paths, audiobook, temp_root)
+        merge_mp3(ordered_paths, audiobook, temp_root)
 
     manifest = {
         "audio_file": "audiobook.mp3",
@@ -474,7 +420,6 @@ def merge_audio_segments(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    encrypt_result(output_dir, output_dir / "audio-result.enc", key)
     return {
         "segments": len(segment_texts),
         "segment_character_limit": max_chars,
@@ -484,13 +429,13 @@ def merge_audio_segments(
     }
 
 
-def merge_audio_shards(partials_dir: Path, output_dir: Path, key: bytes) -> dict[str, Any]:
-    """Decrypt four shard artifacts, validate completeness, and build one audiobook."""
-    encrypted_partials = sorted(partials_dir.glob("partial-*.enc"))
-    if len(encrypted_partials) != MAX_CONCURRENT_SEGMENTS:
+def merge_audio_shards(partials_dir: Path, output_dir: Path) -> dict[str, Any]:
+    """Merge four ZIP packages containing ordinary MP3 segments."""
+    partial_archives = sorted(partials_dir.glob("partial-*.zip"))
+    if len(partial_archives) != MAX_CONCURRENT_SEGMENTS:
         raise RuntimeError(
-            f"Expected {MAX_CONCURRENT_SEGMENTS} encrypted segment artifacts; "
-            f"found {len(encrypted_partials)}."
+            f"Expected {MAX_CONCURRENT_SEGMENTS} segment ZIP artifacts; "
+            f"found {len(partial_archives)}."
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -501,17 +446,18 @@ def merge_audio_shards(partials_dir: Path, output_dir: Path, key: bytes) -> dict
         reference_manifest: dict[str, Any] | None = None
         found_indices: set[int] = set()
 
-        for encrypted_partial in encrypted_partials:
-            clear_zip = decrypt_file(encrypted_partial, key)
+        for partial_archive in partial_archives:
             try:
-                with zipfile.ZipFile(__import__("io").BytesIO(clear_zip)) as archive:
+                with zipfile.ZipFile(partial_archive) as archive:
                     manifest = json.loads(archive.read("partial-manifest.json").decode("utf-8"))
                     if reference_manifest is None:
                         reference_manifest = manifest
                     else:
-                        for field in ("voice", "rate", "parallel_segments",
-                                      "segment_character_limit", "total_segments",
-                                      "chapters", "shard_count"):
+                        for field in (
+                            "voice", "rate", "parallel_segments",
+                            "segment_character_limit", "total_segments",
+                            "chapters", "shard_count",
+                        ):
                             if manifest.get(field) != reference_manifest.get(field):
                                 raise RuntimeError("Audio shard metadata does not match.")
                     for index in manifest.get("assigned_indices", []):
@@ -521,11 +467,10 @@ def merge_audio_shards(partials_dir: Path, output_dir: Path, key: bytes) -> dict
                         name = f"segment_{index:06d}.mp3"
                         if name not in archive.namelist():
                             raise RuntimeError(f"Audio shard is missing segment {index}.")
-                        destination = segment_root / name
-                        destination.write_bytes(archive.read(name))
+                        (segment_root / name).write_bytes(archive.read(name))
                         found_indices.add(index)
             except (zipfile.BadZipFile, KeyError, ValueError, TypeError) as exc:
-                raise RuntimeError(f"Invalid encrypted segment archive: {encrypted_partial.name}") from exc
+                raise RuntimeError(f"Invalid audio segment archive: {partial_archive.name}") from exc
 
         if reference_manifest is None:
             raise RuntimeError("No audio shard metadata was received.")
@@ -557,7 +502,6 @@ def merge_audio_shards(partials_dir: Path, output_dir: Path, key: bytes) -> dict
             json.dumps(final_manifest, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        encrypt_result(output_dir, output_dir / "audio-result.enc", key)
 
     return {
         "segments": total_segments,
@@ -565,29 +509,6 @@ def merge_audio_shards(partials_dir: Path, output_dir: Path, key: bytes) -> dict
         "voice": final_manifest["voice"],
         "rate": final_manifest["rate"],
     }
-
-
-def encrypt_result(output_dir: Path, destination: Path, key: bytes) -> None:
-    zip_path = destination.with_suffix(".zip")
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        for path in sorted(output_dir.iterdir()):
-            # The temporary ZIP is created in the destination directory; never
-            # include it (or a previous encrypted result) inside itself.
-            if path.is_file() and path.resolve() not in {
-                zip_path.resolve(),
-                destination.resolve(),
-            }:
-                archive.write(path, arcname=path.name)
-    plaintext = zip_path.read_bytes()
-    nonce = os.urandom(12)
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, MAGIC)
-    envelope = {
-        "version": 1,
-        "nonce": base64.b64encode(nonce).decode("ascii"),
-        "ciphertext": base64.b64encode(ciphertext).decode("ascii"),
-    }
-    destination.write_text(json.dumps(envelope, separators=(",", ":")), encoding="utf-8")
-    zip_path.unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -604,11 +525,10 @@ def main() -> None:
     parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10, 20, 50, 100), default=DEFAULT_MAX_PARALLEL_JOBS)
     args = parser.parse_args()
 
-    key = load_key()
     args.output.mkdir(parents=True, exist_ok=True)
 
     if args.merge_partials is not None:
-        summary = merge_audio_shards(args.merge_partials, args.output, key)
+        summary = merge_audio_shards(args.merge_partials, args.output)
         print(
             "Audio merge completed: "
             f"{summary['segments']} segment(s), "
@@ -619,7 +539,7 @@ def main() -> None:
     if args.payload is None:
         parser.error("--payload is required for matrix preparation, segment synthesis, and audiobook merge.")
 
-    payload = read_encrypted_payload(args.payload, key)
+    payload = read_payload(args.payload)
     expected_job_id = os.environ.get("JOB_ID", "")
     if expected_job_id and payload.get("job_id") != expected_job_id:
         raise RuntimeError("Job ID mismatch.")
@@ -638,29 +558,30 @@ def main() -> None:
     if args.segment_index is not None:
         summary = asyncio.run(
             create_audio_segment(
-                payload, args.output, key, args.segment_index, args.segment_limit
+                payload, args.output, args.segment_index, args.segment_limit
             )
         )
         print(
-            f"Encrypted TTS segment {summary['segment_index']}/"
-            f"{summary['total_segments']} ({summary['characters']} characters)."
+            f"TTS segment {summary['segment_index']}/"
+            f"{summary['total_segments']} saved as {summary['file']} "
+            f"({summary['characters']} characters)."
         )
         return
 
     if args.merge_segments is not None:
         summary = merge_audio_segments(
-            payload, args.merge_segments, args.output, key,
+            payload, args.merge_segments, args.output,
             args.segment_limit, args.max_parallel
         )
         print(
-            f"Merged {summary['segments']} segment(s) into one encrypted audiobook."
+            f"Merged {summary['segments']} segment(s) into one plain audiobook.mp3."
         )
         return
 
     if args.shard_index is not None:
         summary = asyncio.run(
             create_audio_shard(
-                payload, args.output, key, args.shard_index, args.shard_count
+                payload, args.output, args.shard_index, args.shard_count
             )
         )
         print(
@@ -669,19 +590,13 @@ def main() -> None:
         )
         return
 
-    # Legacy single-run mode retained for local development and backward compatibility.
-    with tempfile.TemporaryDirectory(prefix="sanh-mp3-") as output_name:
-        audio_dir = Path(output_name)
-        summary = asyncio.run(create_audio(payload, audio_dir, max_chars=args.segment_limit))
-        encrypt_result(audio_dir, args.output / "audio-result.enc", key)
-
+    summary = asyncio.run(create_audio(payload, args.output, max_chars=args.segment_limit))
     print(
         "Audio generation completed: "
         f"{summary['chapters']} chapter(s), "
         f"{summary['segments']} segment(s), "
         f"up to {summary['parallel_segments']} concurrent TTS requests."
     )
-
 
 if __name__ == "__main__":
     main()
