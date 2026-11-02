@@ -51,7 +51,7 @@ The file is plain UTF-8 JSON:
 
 The app dispatches `.github/workflows/generate-audio-mp3.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates the matrix. Each matrix job downloads the payload, synthesizes one segment, and uploads a normal MP3 such as `tts 001-207.mp3`. The merge job downloads all segment artifacts, validates that every expected segment exists exactly once, and concatenates them in source order.
 
-The final artifact is named `auN` and contains the ordinary files `auN.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 as `au1.mp3`, `au2.mp3`, and so on.
+The final artifact is named `auN` and contains the ordinary files `auN.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 locally as `au1.mp3`, `au2.mp3`, and so on.
 
 ## Privacy and retention
 
