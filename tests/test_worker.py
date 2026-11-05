@@ -13,6 +13,8 @@ from worker.run_job import (
     DEFAULT_MAX_PARALLEL_JOBS,
     MAX_CONCURRENT_SEGMENTS,
     MAX_SEGMENT_CHARACTERS,
+    TTS_RETRY_ATTEMPTS,
+    TTS_RETRY_BASE_DELAY_SECONDS,
     build_audio_plan,
     build_segment_matrix,
     create_audio,
@@ -76,6 +78,59 @@ class AudioWorkerTests(unittest.TestCase):
 
     def test_default_segment_size_constant(self):
         self.assertEqual(MAX_SEGMENT_CHARACTERS, 5000)
+
+    def test_split_text_rebalances_punctuation_only_tail(self):
+        source = "a" * 4700 + " " + "b" * 296 + " " + "…… ……"
+        chunks = split_text(source)
+        normalized = " ".join(source.split())
+
+        self.assertEqual(len(chunks), 2)
+        self.assertTrue(all(len(part) <= MAX_SEGMENT_CHARACTERS for part in chunks))
+        self.assertTrue(all(any(char.isalnum() for char in part) for part in chunks))
+        self.assertTrue(chunks[-1].endswith("…… ……"))
+        self.assertEqual("".join(chunks).replace(" ", ""), normalized.replace(" ", ""))
+
+    def test_split_text_skips_input_with_no_speakable_content(self):
+        self.assertEqual(split_text("…… ……"), [])
+
+    def test_tts_retry_policy_uses_five_attempts(self):
+        self.assertEqual(TTS_RETRY_ATTEMPTS, 5)
+        self.assertEqual(TTS_RETRY_BASE_DELAY_SECONDS, 3)
+
+    def test_synthesize_chunk_retries_transient_failures_with_backoff(self):
+        async def scenario():
+            attempts = 0
+            delays = []
+
+            class FakeCommunicate:
+                def __init__(self, text, voice, rate):
+                    self.text = text
+
+                async def save(self, destination):
+                    nonlocal attempts
+                    attempts += 1
+                    if attempts < TTS_RETRY_ATTEMPTS:
+                        raise RuntimeError("temporary provider failure")
+                    Path(destination).write_bytes(b"mp3-data")
+
+            async def fake_sleep(delay):
+                delays.append(delay)
+
+            with tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "segment.mp3"
+                with patch.object(run_job.edge_tts, "Communicate", FakeCommunicate):
+                    with patch.object(run_job.asyncio, "sleep", side_effect=fake_sleep):
+                        await run_job.synthesize_chunk(
+                            "spoken text", "vi-VN-NamMinhNeural", "+25%", output
+                        )
+
+                self.assertEqual(attempts, TTS_RETRY_ATTEMPTS)
+                self.assertEqual(
+                    delays,
+                    [TTS_RETRY_BASE_DELAY_SECONDS * (2 ** index)
+                     for index in range(TTS_RETRY_ATTEMPTS - 1)],
+                )
+                self.assertEqual(output.read_bytes(), b"mp3-data")
 
     def test_rate(self):
         self.assertEqual(rate_string(1.25), "+25%")

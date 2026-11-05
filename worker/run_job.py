@@ -16,7 +16,8 @@ import edge_tts
 MAX_CONCURRENT_SEGMENTS = 4  # Legacy in-process path
 DEFAULT_MAX_PARALLEL_JOBS = 30  # GitHub Actions per-segment matrix
 MAX_SEGMENT_CHARACTERS = 5000
-TTS_RETRY_ATTEMPTS = 3
+TTS_RETRY_ATTEMPTS = 5
+TTS_RETRY_BASE_DELAY_SECONDS = 3
 CHAPTER_RE = re.compile(
     r"(?im)^\s*((?:chương|chapter|chap\.?|hồi)\s+[^\n]{1,100}|"
     r"第[0-9０-９零〇○一二两兩三四五六七八九十百千万萬亿億]+[章节回节節集话話篇卷部][^\n]{0,100})\s*$"
@@ -53,6 +54,11 @@ def split_chapters(text: str) -> list[tuple[str, str]]:
     return chapters
 
 
+def _contains_spoken_content(text: str) -> bool:
+    """Return True when text contains at least one letter or digit for TTS."""
+    return any(character.isalnum() for character in text)
+
+
 def split_text(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[str]:
     if max_chars < 1:
         raise ValueError("max_chars must be a positive integer.")
@@ -65,11 +71,36 @@ def split_text(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[str]:
             cut = max_chars
         else:
             cut += 1
+
+        # Avoid creating a trailing segment that contains only punctuation.
+        remainder = text[cut:].strip()
+        if remainder and not _contains_spoken_content(remainder):
+            tail_reserve = min(200, max(1, max_chars // 10))
+            search_start = max_chars // 2
+            search_end = max(search_start + 1, max_chars - tail_reserve)
+            sentence_cut = max(
+                window.rfind(mark, search_start, search_end)
+                for mark in ("。", "！", "？", "!", "?", "；", ";")
+            )
+            if sentence_cut < search_start:
+                sentence_cut = window.rfind(" ", search_start, search_end + 1)
+            if sentence_cut >= search_start:
+                cut = sentence_cut + 1
+            else:
+                cut = max_chars - tail_reserve
+
         parts.append(text[:cut].strip())
         text = text[cut:].strip()
-    if text:
+
+    if text and _contains_spoken_content(text):
         parts.append(text)
-    return [part for part in parts if part]
+    elif text and parts and len(parts[-1]) + len(text) <= max_chars:
+        parts[-1] += text
+
+    return [
+        part for part in parts
+        if part and _contains_spoken_content(part)
+    ]
 
 
 def build_audio_plan(
@@ -169,7 +200,13 @@ async def synthesize_chunk(text: str, voice: str, rate: str, output: Path) -> No
             last_error = exc
             output.unlink(missing_ok=True)
             if attempt + 1 < TTS_RETRY_ATTEMPTS:
-                await asyncio.sleep(2 ** attempt)
+                delay = TTS_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+                print(
+                    f"TTS attempt {attempt + 1}/{TTS_RETRY_ATTEMPTS} failed "
+                    f"({type(exc).__name__}: {exc}); retrying in {delay}s.",
+                    flush=True,
+                )
+                await asyncio.sleep(delay)
     raise RuntimeError(
         f"An audio segment failed after {TTS_RETRY_ATTEMPTS} attempts."
     ) from last_error
