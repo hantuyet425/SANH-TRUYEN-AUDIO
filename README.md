@@ -19,7 +19,7 @@ Open **Actions → Generate Audio MP3 → Run workflow**.
 
 | Workflow input | Default | Purpose |
 |---|---:|---|
-| `max_parallel` | `30` | Maximum number of chapter jobs requested to run simultaneously; 15–20 chapters fit in one concurrent batch |
+| `max_parallel` | `50` | Maximum number of chapter jobs requested to run simultaneously; actual concurrency depends on GitHub runner/account limits |
 
 GitHub may queue jobs when runner capacity or account concurrency limits are reached. A workflow run can contain at most 256 matrix jobs; the preparation step stops with an error if the story would exceed that limit.
 
@@ -49,7 +49,7 @@ The file is plain UTF-8 JSON:
 }
 ```
 
-The app dispatches `.github/workflows/generate-audio-mp3.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates one matrix entry per detected chapter. Each matrix job downloads the payload, synthesizes one whole chapter into a single MP3, and uploads a file such as `tts 001-015.mp3`. The workflow requests up to 30 chapter jobs at once, so a typical 15–20 chapter story is submitted as one concurrent batch. The merge job downloads all chapter artifacts, validates that every expected chapter exists exactly once, and concatenates them in source order.
+The app dispatches `.github/workflows/generate-audio-mp3.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates one matrix entry per detected chapter. Each matrix job downloads the payload, synthesizes one whole chapter into a single MP3, and uploads a file such as `tts 001-015.mp3`. The workflow requests up to 50 chapter jobs at once, subject to GitHub runner and account concurrency limits. The merge job downloads all chapter artifacts, validates that every expected chapter exists exactly once, and concatenates them in source order.
 
 The final artifact is named `auN` and contains the ordinary files `auN.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 locally as `au1.mp3`, `au2.mp3`, and so on.
 
