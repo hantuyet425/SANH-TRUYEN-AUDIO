@@ -106,7 +106,7 @@ def split_text(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[str]:
 def build_audio_plan(
     text: str, max_chars: int = MAX_SEGMENT_CHARACTERS
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Create a deterministic chapter/segment plan for all visible matrix jobs."""
+    """Legacy character-limited plan used by the local and shard synthesis paths."""
     if max_chars < 1:
         raise ValueError("max_chars must be a positive integer.")
     chapters = split_chapters(text)
@@ -143,14 +143,59 @@ def build_audio_plan(
     return chapter_manifest, segment_texts
 
 
-def build_segment_matrix(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> list[dict[str, Any]]:
-    """Build one visible GitHub Actions matrix job for every audio segment."""
-    _chapters, segments = build_audio_plan(text, max_chars=max_chars)
+def build_chapter_audio_plan(
+    text: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Create exactly one speech segment and MP3 job for each source chapter."""
+    chapters = split_chapters(text)
+    if not chapters:
+        raise RuntimeError("No chapters with readable content could be created.")
+
+    # Keep opening narration in the first real chapter instead of creating
+    # a separate non-chapter job. The original reading order is preserved.
+    opening_text = ""
+    if len(chapters) > 1 and chapters[0][0] == "Phần mở đầu":
+        opening_text = chapters[0][1].strip()
+        chapters = chapters[1:]
+
+    chapter_manifest: list[dict[str, Any]] = []
+    segment_texts: list[str] = []
+    for chapter_title, body in chapters:
+        body = body.strip()
+        spoken_text = body
+        if chapter_title not in {"Phần mở đầu", "Toàn bộ truyện"}:
+            heading = chapter_title.rstrip()
+            separator = " " if heading.endswith((".", "!", "?", ":", "。", "！", "？")) else ". "
+            spoken_text = f"{heading}{separator}{body}"
+        if not segment_texts and opening_text:
+            spoken_text = f"{opening_text}\n\n{spoken_text}"
+        spoken_text = spoken_text.strip()
+        if not _contains_spoken_content(spoken_text):
+            continue
+
+        segment_index = len(segment_texts) + 1
+        segment_texts.append(spoken_text)
+        chapter_manifest.append({
+            "index": len(chapter_manifest) + 1,
+            "title": chapter_title,
+            "characters": len(body) + (len(opening_text) if segment_index == 1 else 0),
+            "segments": 1,
+            "first_segment": segment_index,
+            "last_segment": segment_index,
+        })
+
+    if not segment_texts:
+        raise RuntimeError("No audio segments could be created.")
+    return chapter_manifest, segment_texts
+
+
+def build_segment_matrix(text: str) -> dict[str, Any]:
+    """Build one visible GitHub Actions matrix job for every source chapter."""
+    _chapters, segments = build_chapter_audio_plan(text)
     if len(segments) > 256:
         raise RuntimeError(
-            f"This story creates {len(segments)} segments. GitHub Actions supports at most "
-            "256 matrix jobs per workflow run. Increase segment_characters or split the book "
-            "into smaller input files."
+            f"This story contains {len(segments)} chapters. GitHub Actions supports at most "
+            "256 matrix jobs per workflow run. Split the book into smaller input files."
         )
     return {
         "include": [
@@ -162,10 +207,9 @@ def build_segment_matrix(text: str, max_chars: int = MAX_SEGMENT_CHARACTERS) -> 
 
 def write_segment_matrix_outputs(
     text: str,
-    max_chars: int,
     github_output: str | Path | None,
 ) -> dict[str, Any]:
-    matrix = build_segment_matrix(text, max_chars=max_chars)
+    matrix = build_segment_matrix(text)
     result = {
         "segment_count": len(matrix["include"]),
         "segment_matrix": matrix,
@@ -378,27 +422,26 @@ async def create_audio_segment(
     payload: dict[str, Any],
     output_dir: Path,
     segment_index: int,
-    max_chars: int = MAX_SEGMENT_CHARACTERS,
 ) -> dict[str, Any]:
-    """Synthesize exactly one planned segment and save it as an ordinary MP3."""
+    """Synthesize exactly one whole chapter and save it as one ordinary MP3."""
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
         raise RuntimeError("Unsupported Vietnamese voice selected.")
 
-    _chapters, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
-    if segment_index < 1 or segment_index > len(segment_texts):
+    _chapters, chapter_texts = build_chapter_audio_plan(payload["text"])
+    if segment_index < 1 or segment_index > len(chapter_texts):
         raise RuntimeError(
-            f"Segment index {segment_index} is outside 1..{len(segment_texts)}."
+            f"Chapter index {segment_index} is outside 1..{len(chapter_texts)}."
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    destination = output_dir / f"tts {segment_index:03d}-{len(segment_texts):03d}.mp3"
-    await synthesize_chunk(segment_texts[segment_index - 1], voice, rate, destination)
+    destination = output_dir / f"tts {segment_index:03d}-{len(chapter_texts):03d}.mp3"
+    await synthesize_chunk(chapter_texts[segment_index - 1], voice, rate, destination)
     return {
         "segment_index": segment_index,
-        "total_segments": len(segment_texts),
-        "characters": len(segment_texts[segment_index - 1]),
+        "total_segments": len(chapter_texts),
+        "characters": len(chapter_texts[segment_index - 1]),
         "file": destination.name,
     }
 
@@ -407,11 +450,10 @@ def merge_audio_segments(
     payload: dict[str, Any],
     segments_dir: Path,
     output_dir: Path,
-    max_chars: int = MAX_SEGMENT_CHARACTERS,
     max_parallel: int = DEFAULT_MAX_PARALLEL_JOBS,
     output_name: str = "au1.mp3",
 ) -> dict[str, Any]:
-    """Merge plain MP3 segment files into one ordered auN.mp3 audiobook."""
+    """Merge one MP3 per chapter into one ordered auN.mp3 audiobook."""
     voice = str(payload.get("voice") or "vi-VN-NamMinhNeural")
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
@@ -421,20 +463,20 @@ def merge_audio_segments(
     if not re.fullmatch(r"au[1-9][0-9]*\.mp3", output_name):
         raise RuntimeError("output_name must use the au1.mp3, au2.mp3, ... naming format.")
 
-    chapter_manifest, segment_texts = build_audio_plan(payload["text"], max_chars=max_chars)
-    expected_indices = list(range(1, len(segment_texts) + 1))
+    chapter_manifest, chapter_texts = build_chapter_audio_plan(payload["text"])
+    expected_indices = list(range(1, len(chapter_texts) + 1))
     actual_files = {
         path.name for path in segments_dir.glob("tts *.mp3") if path.is_file()
     }
     expected_files = {
-        f"tts {index:03d}-{len(segment_texts):03d}.mp3"
+        f"tts {index:03d}-{len(chapter_texts):03d}.mp3"
         for index in expected_indices
     }
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
         raise RuntimeError(
-            f"Segment artifacts are incomplete (missing={len(missing)}, unexpected={len(extra)})."
+            f"Chapter artifacts are incomplete (missing={len(missing)}, unexpected={len(extra)})."
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -442,8 +484,8 @@ def merge_audio_segments(
         temp_root = Path(temp_name)
         ordered_paths: list[Path] = []
         for index in expected_indices:
-            source = segments_dir / f"tts {index:03d}-{len(segment_texts):03d}.mp3"
-            destination = temp_root / f"segment_{index:06d}.mp3"
+            source = segments_dir / f"tts {index:03d}-{len(chapter_texts):03d}.mp3"
+            destination = temp_root / f"chapter_{index:06d}.mp3"
             destination.write_bytes(source.read_bytes())
             ordered_paths.append(destination)
 
@@ -454,9 +496,10 @@ def merge_audio_segments(
         "audio_file": output_name,
         "voice": voice,
         "rate": rate,
-        "parallel_segments": max_parallel,
-        "segment_character_limit": max_chars,
-        "total_segments": len(segment_texts),
+        "parallel_chapters": max_parallel,
+        "segments_per_chapter": 1,
+        "total_chapters": len(chapter_manifest),
+        "total_segments": len(chapter_texts),
         "chapters": chapter_manifest,
     }
     (output_dir / "manifest.json").write_text(
@@ -464,9 +507,9 @@ def merge_audio_segments(
         encoding="utf-8",
     )
     return {
-        "segments": len(segment_texts),
-        "segment_character_limit": max_chars,
-        "parallel_segments": max_parallel,
+        "segments": len(chapter_texts),
+        "chapters": len(chapter_manifest),
+        "parallel_chapters": max_parallel,
         "voice": voice,
         "rate": rate,
         "audio_file": output_name,
@@ -591,19 +634,17 @@ def main() -> None:
 
     if args.prepare_matrix:
         output_path = os.environ.get("GITHUB_OUTPUT")
-        summary = write_segment_matrix_outputs(
-            payload["text"], args.segment_limit, output_path
-        )
+        summary = write_segment_matrix_outputs(payload["text"], output_path)
         print(
-            f"Prepared {summary['segment_count']} visible TTS segment job(s) "
-            f"at a maximum of {args.segment_limit} characters each."
+            f"Prepared {summary['segment_count']} visible TTS chapter job(s) "
+            "(one MP3 per chapter)."
         )
         return
 
     if args.segment_index is not None:
         summary = asyncio.run(
             create_audio_segment(
-                payload, args.output, args.segment_index, args.segment_limit
+                payload, args.output, args.segment_index
             )
         )
         print(
@@ -616,7 +657,7 @@ def main() -> None:
     if args.merge_segments is not None:
         summary = merge_audio_segments(
             payload, args.merge_segments, args.output,
-            args.segment_limit, args.max_parallel, args.output_name
+            args.max_parallel, args.output_name
         )
         print(
             f"Merged {summary['segments']} segment(s) into {summary['audio_file']}."

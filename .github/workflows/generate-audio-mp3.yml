@@ -12,13 +12,8 @@ on:
         description: Temporary branch containing the plain JSON job input
         required: true
         type: string
-      segment_characters:
-        description: "Maximum characters in each TTS segment (easy-to-change default: 5000)"
-        required: false
-        default: 5000
-        type: number
       max_parallel:
-        description: Maximum number of segment jobs running at the same time
+        description: Maximum number of chapter jobs running at the same time (30 runs typical 15-20 chapter books together)
         required: false
         default: "30"
         type: choice
@@ -84,7 +79,7 @@ jobs:
               f.write(result.stdout)
           PY
 
-      - name: Build one matrix entry for every segment
+      - name: Build one matrix entry for every chapter
         id: plan
         env:
           JOB_ID: ${{ inputs.job_id }}
@@ -92,10 +87,9 @@ jobs:
           python worker/run_job.py \
             --payload work/input/payload.json \
             --output work/plan \
-            --prepare-matrix \
-            --segment-limit "${{ inputs.segment_characters }}"
+            --prepare-matrix
 
-      - name: Upload source payload for segment jobs
+      - name: Upload source payload for chapter jobs
         uses: actions/upload-artifact@v4
         with:
           name: audio-payload-${{ inputs.job_id }}
@@ -133,7 +127,7 @@ jobs:
           name: audio-payload-${{ inputs.job_id }}
           path: work/input
 
-      - name: Synthesize exactly this segment
+      - name: Synthesize exactly one chapter into one MP3
         env:
           JOB_ID: ${{ inputs.job_id }}
           SEGMENT_INDEX: ${{ matrix.segment_index }}
@@ -141,10 +135,9 @@ jobs:
           python worker/run_job.py \
             --payload work/input/payload.json \
             --output work/segment \
-            --segment-index "$SEGMENT_INDEX" \
-            --segment-limit "${{ inputs.segment_characters }}"
+            --segment-index "$SEGMENT_INDEX"
 
-      - name: Upload MP3 segment result
+      - name: Upload chapter MP3 result
         uses: actions/upload-artifact@v4
         with:
           name: tts-${{ matrix.segment_label }}-of-${{ needs.prepare.outputs.segment_count }}
@@ -182,14 +175,14 @@ jobs:
           name: audio-payload-${{ inputs.job_id }}
           path: work/input
 
-      - name: Download every MP3 segment
+      - name: Download every chapter MP3
         uses: actions/download-artifact@v4
         with:
           pattern: tts-*
           path: work/segments
           merge-multiple: true
 
-      - name: Merge all MP3 segments in original order into one audiobook
+      - name: Merge all chapter MP3 files in original order into one audiobook
         env:
           JOB_ID: ${{ inputs.job_id }}
           AUDIO_INDEX: ${{ github.run_number }}
@@ -198,7 +191,6 @@ jobs:
             --payload work/input/payload.json \
             --output work/result \
             --merge-segments work/segments \
-            --segment-limit "${{ inputs.segment_characters }}" \
             --max-parallel "${{ inputs.max_parallel }}" \
             --output-name "au${AUDIO_INDEX}.mp3"
 

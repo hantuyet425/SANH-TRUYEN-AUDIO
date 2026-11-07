@@ -3,10 +3,11 @@
 Public GitHub Actions worker for the SẢNH TRUYỆN Windows desktop app.
 
 - Receives a plain UTF-8 JSON job payload from a temporary branch.
-- Splits the story into speech segments, with a default maximum of 5,000 characters per segment.
-- Creates one visible GitHub Actions matrix job per segment, named `TTS 001/207`, `TTS 002/207`, and so on.
-- Synthesizes each segment with Vietnamese Edge TTS and uploads it as a normal MP3 file such as `tts 001-207.mp3` (the first number is the segment and the second is the total).
-- Merges every segment in source order with FFmpeg into exactly one final `auN.mp3` file (`au1.mp3`, `au2.mp3`, `au3.mp3`, ...).
+- Creates exactly one audio job and one MP3 file per detected story chapter; chapters are not split into separate 5,000-character jobs.
+- Combines any introductory narration before the first chapter with that first chapter, so the job count matches the number of chapters.
+- Sends each whole chapter to Vietnamese Edge TTS in one synthesis stream. Edge TTS handles its own protocol-sized text messages inside that stream; SẢNH TRUYỆN does not create extra MP3 files for those internal messages.
+- Creates one visible GitHub Actions matrix job per chapter, named `TTS 001/015`, `TTS 002/015`, and so on.
+- Uploads one chapter MP3 per job, then merges all chapter files in source order with FFmpeg into exactly one final `auN.mp3` file (`au1.mp3`, `au2.mp3`, `au3.mp3`, ...).
 - Publishes `auN.mp3` and `manifest.json` as the final artifact named `auN`.
 - Deletes the temporary input branch after the workflow.
 
@@ -18,8 +19,7 @@ Open **Actions → Generate Audio MP3 → Run workflow**.
 
 | Workflow input | Default | Purpose |
 |---|---:|---|
-| `segment_characters` | `5000` | Maximum character count sent to one TTS segment job |
-| `max_parallel` | `30` | Maximum number of segment jobs requested to run simultaneously |
+| `max_parallel` | `30` | Maximum number of chapter jobs requested to run simultaneously; 15–20 chapters fit in one concurrent batch |
 
 GitHub may queue jobs when runner capacity or account concurrency limits are reached. A workflow run can contain at most 256 matrix jobs; the preparation step stops with an error if the story would exceed that limit.
 
@@ -49,13 +49,13 @@ The file is plain UTF-8 JSON:
 }
 ```
 
-The app dispatches `.github/workflows/generate-audio-mp3.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates the matrix. Each matrix job downloads the payload, synthesizes one segment, and uploads a normal MP3 such as `tts 001-207.mp3`. The merge job downloads all segment artifacts, validates that every expected segment exists exactly once, and concatenates them in source order.
+The app dispatches `.github/workflows/generate-audio-mp3.yml` on `main`, passing `job_id` and `payload_branch`. The preparation job creates one matrix entry per detected chapter. Each matrix job downloads the payload, synthesizes one whole chapter into a single MP3, and uploads a file such as `tts 001-015.mp3`. The workflow requests up to 30 chapter jobs at once, so a typical 15–20 chapter story is submitted as one concurrent batch. The merge job downloads all chapter artifacts, validates that every expected chapter exists exactly once, and concatenates them in source order.
 
 The final artifact is named `auN` and contains the ordinary files `auN.mp3` and `manifest.json`; the desktop app downloads the artifact ZIP and saves the MP3 locally as `au1.mp3`, `au2.mp3`, and so on.
 
 ## Privacy and retention
 
-**This repository is public and this workflow does not encrypt story text or audio.** While a job is running, the source text is present in its temporary public Git branch and in the short-lived payload artifact. The generated MP3 segment artifacts and final audiobook artifact are also ordinary, unencrypted files. Anyone who can read this public repository may be able to access branch contents while published and workflow artifacts while they remain available.
+**This repository is public and this workflow does not encrypt story text or audio.** While a job is running, the source text is present in its temporary public Git branch and in the short-lived payload artifact. The generated chapter MP3 artifacts and final audiobook artifact are also ordinary, unencrypted files. Anyone who can read this public repository may be able to access branch contents while published and workflow artifacts while they remain available.
 
 The cleanup job deletes the temporary branch reference, but deleting a branch is not a guarantee that the underlying Git objects are immediately erased. Artifacts expire after **1 day**. Do not use this workflow for private, confidential, or copyrighted text/audio that must not be publicly accessible. To reduce exposure without AES, make this worker repository private before sending story text to it.
 

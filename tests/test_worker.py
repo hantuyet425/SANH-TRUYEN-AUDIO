@@ -16,6 +16,7 @@ from worker.run_job import (
     TTS_RETRY_ATTEMPTS,
     TTS_RETRY_BASE_DELAY_SECONDS,
     build_audio_plan,
+    build_chapter_audio_plan,
     build_segment_matrix,
     create_audio,
     create_audio_segment,
@@ -173,21 +174,50 @@ class AudioWorkerTests(unittest.TestCase):
         asyncio.run(scenario())
         self.assertEqual(MAX_CONCURRENT_SEGMENTS, 4)
 
-    def test_matrix_contains_one_job_per_segment_and_supports_custom_size(self):
-        self.assertEqual(build_segment_matrix("ABCDEFGHIJK", max_chars=5)["include"], [
+    def test_chapter_audio_plan_keeps_one_complete_chapter_in_each_segment(self):
+        opening = "Lời chào mở đầu."
+        long_body = "A" * 6200
+        source = (
+            opening
+            + "\n\nChương 1: Mở đầu\n"
+            + long_body
+            + "\n\nChương 2: Tiếp theo\nNội dung chương hai."
+        )
+        chapters, segments = build_chapter_audio_plan(source)
+
+        self.assertEqual(len(chapters), 2)
+        self.assertEqual(len(segments), 2)
+        self.assertTrue(segments[0].startswith(opening + "\n\nChương 1: Mở đầu. "))
+        self.assertGreater(len(segments[0]), MAX_SEGMENT_CHARACTERS)
+        self.assertEqual(segments[1], "Chương 2: Tiếp theo. Nội dung chương hai.")
+        self.assertEqual([chapter["segments"] for chapter in chapters], [1, 1])
+        self.assertEqual([chapter["first_segment"] for chapter in chapters], [1, 2])
+
+    def test_matrix_contains_one_job_per_chapter(self):
+        source = (
+            "Chương 1: Mở đầu\nNội dung một."
+            + "\n\nChương 2: Tiếp theo\nNội dung hai."
+            + "\n\nChương 3: Kết thúc\nNội dung ba."
+        )
+        self.assertEqual(build_segment_matrix(source)["include"], [
             {"segment_index": 1, "segment_label": "001"},
             {"segment_index": 2, "segment_label": "002"},
             {"segment_index": 3, "segment_label": "003"},
         ])
 
-    def test_matrix_rejects_more_than_githubs_256_job_limit(self):
+    def test_matrix_rejects_more_than_githubs_256_chapter_limit(self):
+        source = "\n\n".join(
+            f"Chương {index}: Tiêu đề\nNội dung {index}"
+            for index in range(1, 258)
+        )
         with self.assertRaisesRegex(RuntimeError, "at most 256 matrix jobs"):
-            build_segment_matrix("x" * 257, max_chars=1)
+            build_segment_matrix(source)
 
     def test_prepare_matrix_writes_only_segment_ids_to_github_output(self):
+        source = "Chương 1: Mở đầu\nNội dung A\n\nChương 2: Tiếp theo\nNội dung B"
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "github-output.txt"
-            summary = write_segment_matrix_outputs("ABCDEFGHIJ", 5, output)
+            summary = write_segment_matrix_outputs(source, output)
             self.assertEqual(summary["segment_count"], 2)
             values = dict(line.split("=", 1)
                           for line in output.read_text(encoding="utf-8").splitlines())
@@ -198,55 +228,81 @@ class AudioWorkerTests(unittest.TestCase):
                 ]
             })
             self.assertEqual(values["segment_count"], "2")
-            self.assertNotIn("ABCDEFGHIJ", output.read_text(encoding="utf-8"))
+            self.assertNotIn("Nội dung A", output.read_text(encoding="utf-8"))
+            self.assertNotIn("Nội dung B", output.read_text(encoding="utf-8"))
 
-    def test_one_segment_job_saves_plain_mp3(self):
+    def test_one_chapter_job_saves_the_whole_chapter_as_one_mp3(self):
         async def fake_synthesize(text, voice, rate, destination):
             destination.write_bytes(("tts:" + text).encode("utf-8"))
-        payload = {"text": "ABCDEFGHIJ", "voice": "vi-VN-NamMinhNeural", "rate": 1.0}
+        payload = {
+            "text": "Chương 1: Đầu\nNỘI_DUNG_1\n\nChương 2: Sau\nNỘI_DUNG_2",
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "segment"
             with patch.object(run_job, "synthesize_chunk", side_effect=fake_synthesize):
-                summary = asyncio.run(create_audio_segment(payload, output, 2, max_chars=5))
+                summary = asyncio.run(create_audio_segment(payload, output, 2))
             self.assertEqual(summary["segment_index"], 2)
             self.assertEqual(summary["total_segments"], 2)
-            self.assertEqual(summary["characters"], 5)
+            self.assertEqual(summary["characters"], len("Chương 2: Sau. NỘI_DUNG_2"))
             self.assertEqual([p.name for p in output.iterdir()], ["tts 002-002.mp3"])
-            self.assertEqual((output / "tts 002-002.mp3").read_bytes(), b"tts:FGHIJ")
+            self.assertEqual(
+                (output / "tts 002-002.mp3").read_bytes(),
+                "tts:Chương 2: Sau. NỘI_DUNG_2".encode("utf-8"),
+            )
 
-    def test_individual_plain_segments_merge_in_original_order(self):
+    def test_individual_plain_chapters_merge_in_original_order(self):
         def fake_merge(parts, output, work_dir):
             output.write_bytes(b"|".join(path.read_bytes() for path in parts))
-        payload = {"text": "ABCDEF", "voice": "vi-VN-NamMinhNeural", "rate": 1.0}
+        payload = {
+            "text": (
+                "Chương 1: Đầu\nNỘI_DUNG_1"
+                + "\n\nChương 2: Giữa\nNỘI_DUNG_2"
+                + "\n\nChương 3: Cuối\nNỘI_DUNG_3"
+            ),
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             segments = root / "segments"
             segments.mkdir()
-            for index, value in enumerate((b"audio-AB", b"audio-CD", b"audio-EF"), start=1):
+            for index, value in enumerate((b"chapter-1", b"chapter-2", b"chapter-3"), start=1):
                 (segments / f"tts {index:03d}-003.mp3").write_bytes(value)
             with patch.object(run_job, "merge_mp3", side_effect=fake_merge):
                 summary = merge_audio_segments(
-                    payload, segments, root / "result", max_chars=2, max_parallel=30,
+                    payload, segments, root / "result", max_parallel=30,
                     output_name="au7.mp3",
                 )
             self.assertEqual(summary["segments"], 3)
+            self.assertEqual(summary["chapters"], 3)
             self.assertEqual((root / "result" / "au7.mp3").read_bytes(),
-                             b"audio-AB|audio-CD|audio-EF")
+                             b"chapter-1|chapter-2|chapter-3")
             manifest = json.loads((root / "result" / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["total_segments"], 3)
+            self.assertEqual(manifest["total_chapters"], 3)
+            self.assertEqual(manifest["segments_per_chapter"], 1)
             self.assertEqual(manifest["audio_file"], "au7.mp3")
-            self.assertEqual(manifest["segment_character_limit"], 2)
-            self.assertEqual(manifest["parallel_segments"], 30)
+            self.assertEqual(manifest["parallel_chapters"], 30)
 
-    def test_merge_rejects_a_missing_individual_segment(self):
-        payload = {"text": "ABCDEF", "voice": "vi-VN-NamMinhNeural", "rate": 1.0}
+    def test_merge_rejects_a_missing_chapter_mp3(self):
+        payload = {
+            "text": (
+                "Chương 1: Đầu\nNỘI_DUNG_1"
+                + "\n\nChương 2: Giữa\nNỘI_DUNG_2"
+                + "\n\nChương 3: Cuối\nNỘI_DUNG_3"
+            ),
+            "voice": "vi-VN-NamMinhNeural",
+            "rate": 1.0,
+        }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             segments = root / "segments"
             segments.mkdir()
             (segments / "tts 001-003.mp3").write_bytes(b"audio")
-            with self.assertRaisesRegex(RuntimeError, "Segment artifacts are incomplete"):
-                merge_audio_segments(payload, segments, root / "result", max_chars=2)
+            with self.assertRaisesRegex(RuntimeError, "Chapter artifacts are incomplete"):
+                merge_audio_segments(payload, segments, root / "result")
 
     def test_four_matrix_shards_merge_plain_mp3_segments(self):
         async def fake_synthesize(text, voice, rate, destination):
