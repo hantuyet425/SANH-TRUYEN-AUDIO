@@ -32,8 +32,8 @@ from worker.run_job import (
 
 
 class AudioWorkerTests(unittest.TestCase):
-    def test_default_max_parallel_jobs_is_30(self):
-        self.assertEqual(DEFAULT_MAX_PARALLEL_JOBS, 30)
+    def test_default_max_parallel_jobs_is_50(self):
+        self.assertEqual(DEFAULT_MAX_PARALLEL_JOBS, 50)
 
     def test_split_vietnamese_chapters(self):
         source = "Chương 1: Mở đầu\nNội dung một.\n\nChương 2: Tiếp theo\nNội dung hai."
@@ -272,7 +272,7 @@ class AudioWorkerTests(unittest.TestCase):
                 (segments / f"tts {index:03d}-003.mp3").write_bytes(value)
             with patch.object(run_job, "merge_mp3", side_effect=fake_merge):
                 summary = merge_audio_segments(
-                    payload, segments, root / "result", max_parallel=30,
+                    payload, segments, root / "result", max_parallel=50,
                     output_name="au7.mp3",
                 )
             self.assertEqual(summary["segments"], 3)
@@ -284,7 +284,7 @@ class AudioWorkerTests(unittest.TestCase):
             self.assertEqual(manifest["total_chapters"], 3)
             self.assertEqual(manifest["segments_per_chapter"], 1)
             self.assertEqual(manifest["audio_file"], "au7.mp3")
-            self.assertEqual(manifest["parallel_chapters"], 30)
+            self.assertEqual(manifest["parallel_chapters"], 50)
 
     def test_merge_rejects_a_missing_chapter_mp3(self):
         payload = {

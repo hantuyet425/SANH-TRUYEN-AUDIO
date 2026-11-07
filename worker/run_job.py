@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 import edge_tts
 
 MAX_CONCURRENT_SEGMENTS = 4  # Legacy in-process path
-DEFAULT_MAX_PARALLEL_JOBS = 30  # GitHub Actions per-segment matrix
+DEFAULT_MAX_PARALLEL_JOBS = 50  # GitHub Actions per-chapter matrix
 MAX_SEGMENT_CHARACTERS = 5000
 TTS_RETRY_ATTEMPTS = 5
 TTS_RETRY_BASE_DELAY_SECONDS = 3
@@ -458,8 +458,8 @@ def merge_audio_segments(
     rate = rate_string(float(payload.get("rate", 1.0)))
     if voice not in {"vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"}:
         raise RuntimeError("Unsupported Vietnamese voice selected.")
-    if max_parallel not in {1, 2, 3, 4, 6, 8, 10, 20, 30}:
-        raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10, 20, 30.")
+    if max_parallel not in {1, 2, 3, 4, 6, 8, 10, 20, 30, 50}:
+        raise RuntimeError("max_parallel must be one of: 1, 2, 3, 4, 6, 8, 10, 20, 30, 50.")
     if not re.fullmatch(r"au[1-9][0-9]*\.mp3", output_name):
         raise RuntimeError("output_name must use the au1.mp3, au2.mp3, ... naming format.")
 
@@ -609,7 +609,7 @@ def main() -> None:
     parser.add_argument("--segment-index", type=int)
     parser.add_argument("--merge-segments", type=Path)
     parser.add_argument("--segment-limit", type=int, default=MAX_SEGMENT_CHARACTERS)
-    parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10, 20, 30), default=DEFAULT_MAX_PARALLEL_JOBS)
+    parser.add_argument("--max-parallel", type=int, choices=(1, 2, 3, 4, 6, 8, 10, 20, 30, 50), default=DEFAULT_MAX_PARALLEL_JOBS)
     parser.add_argument("--output-name", default="au1.mp3")
     args = parser.parse_args()
 
